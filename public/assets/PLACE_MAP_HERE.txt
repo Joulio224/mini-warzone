@@ -1,4 +1,0 @@
-Dépose ici le fichier de la map, renommé en map.glb
-(ex. Low Poly Arena téléchargée sur itch.io).
-
-Chemin final attendu : public/assets/map.glb
