@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
 import { auth } from './firebase.js';
-import { connectToServer, sendMove, sendShoot } from './network.js';
+import { connectToServer, sendMove, sendShoot, sendCollectLoot } from './network.js';
 
 // ---------------------------------------------------------------------------
 // Scène, caméra, rendu
@@ -53,8 +53,7 @@ scene.add(fallbackGround);
 
 // Objets sur lesquels on teste le sol (raycast vers le bas) — séparé de
 // scene.children pour ne pas taper les autres joueurs, les traceurs de tir,
-// ou l'arme (qui est enfant de la caméra, donc jamais concernée de toute
-// façon).
+// le loot au sol, ou l'arme (enfant de la caméra, jamais concernée).
 const groundObjects = [fallbackGround];
 
 // ---------------------------------------------------------------------------
@@ -162,6 +161,116 @@ scene.add(camera); // la caméra doit être dans la scène pour que ses enfants 
 let recoilKick = 0; // 0 = repos, monte brièvement à chaque tir puis redescend
 
 // ---------------------------------------------------------------------------
+// Vie, mort, respawn
+// ---------------------------------------------------------------------------
+const MAX_HP = 100;
+let localHp = MAX_HP;
+let isDead = false;
+
+const healthFillEl = document.getElementById('health-fill');
+const healthTextEl = document.getElementById('health-text');
+const damageFlashEl = document.getElementById('damage-flash');
+const deathScreenEl = document.getElementById('death-screen');
+const respawnCountdownEl = document.getElementById('respawn-countdown');
+const crosshairEl = document.getElementById('crosshair');
+
+function updateHealthUI(hp) {
+  const clamped = Math.max(0, Math.min(MAX_HP, hp));
+  healthFillEl.style.width = `${clamped}%`;
+  healthTextEl.textContent = String(clamped);
+}
+updateHealthUI(localHp);
+
+let damageFlashTimeout = null;
+function flashDamage() {
+  damageFlashEl.classList.add('show');
+  clearTimeout(damageFlashTimeout);
+  damageFlashTimeout = setTimeout(() => damageFlashEl.classList.remove('show'), 250);
+}
+
+let hitMarkerTimeout = null;
+function showHitMarker() {
+  crosshairEl.classList.add('hit');
+  clearTimeout(hitMarkerTimeout);
+  hitMarkerTimeout = setTimeout(() => crosshairEl.classList.remove('hit'), 150);
+}
+
+let respawnInterval = null;
+function handleYouDied() {
+  isDead = true;
+  localHp = 0;
+  updateHealthUI(0);
+  weaponGroup.visible = false;
+  deathScreenEl.hidden = false;
+
+  let secondsLeft = 3;
+  respawnCountdownEl.textContent = `Réapparition dans ${secondsLeft}s…`;
+  clearInterval(respawnInterval);
+  respawnInterval = setInterval(() => {
+    secondsLeft -= 1;
+    if (secondsLeft > 0) {
+      respawnCountdownEl.textContent = `Réapparition dans ${secondsLeft}s…`;
+    }
+  }, 1000);
+}
+
+function handleYouRespawned({ position }) {
+  isDead = false;
+  localHp = MAX_HP;
+  updateHealthUI(MAX_HP);
+  weaponGroup.visible = true;
+  deathScreenEl.hidden = true;
+  clearInterval(respawnInterval);
+  verticalVelocity = 0;
+  if (position) {
+    camera.position.set(position.x, position.y, position.z);
+  }
+}
+
+function handleHpUpdate(hp) {
+  if (hp < localHp) flashDamage();
+  localHp = hp;
+  updateHealthUI(hp);
+}
+
+// ---------------------------------------------------------------------------
+// Loot au sol (déposé par les joueurs éliminés)
+// ---------------------------------------------------------------------------
+const lootMeshes = new Map(); // lootId -> mesh
+const nearbyLootRequested = new Set(); // évite de spammer collect-loot chaque frame
+const LOOT_COLLECT_RADIUS_CLIENT = 2.0;
+
+function createLootMesh() {
+  const mesh = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.3, 0),
+    new THREE.MeshStandardMaterial({
+      color: 0xffd23f,
+      emissive: 0x554400,
+      metalness: 0.3,
+      roughness: 0.4,
+    })
+  );
+  mesh.castShadow = true;
+  return mesh;
+}
+
+function spawnLootMesh(id, position) {
+  if (lootMeshes.has(id)) return;
+  const mesh = createLootMesh();
+  mesh.position.set(position.x, position.y, position.z);
+  scene.add(mesh);
+  lootMeshes.set(id, mesh);
+}
+
+function removeLootMesh(id) {
+  const mesh = lootMeshes.get(id);
+  if (!mesh) return;
+  scene.remove(mesh);
+  lootMeshes.delete(id);
+  nearbyLootRequested.delete(id);
+}
+
+// ---------------------------------------------------------------------------
 // Déplacement, saut, accroupi, visée
 // ---------------------------------------------------------------------------
 const move = { forward: false, backward: false, left: false, right: false };
@@ -206,7 +315,7 @@ function onKeyChange(e, isDown) {
       move.right = isDown;
       break;
     case 'Space':
-      if (isDown && isGrounded) {
+      if (isDown && isGrounded && !isDead) {
         verticalVelocity = JUMP_SPEED;
         isGrounded = false;
       }
@@ -290,6 +399,20 @@ function removeOtherPlayer(id) {
   otherPlayers.delete(id);
 }
 
+function setOtherPlayerVisible(id, visible) {
+  const entry = otherPlayers.get(id);
+  if (!entry) return;
+  entry.mesh.visible = visible;
+}
+
+function snapOtherPlayer(id, position) {
+  const entry = otherPlayers.get(id);
+  if (!entry || !position) return;
+  const p = new THREE.Vector3(position.x, position.y - EYE_HEIGHT, position.z);
+  entry.mesh.position.copy(p);
+  entry.targetPosition.copy(p);
+}
+
 // Effet visuel de tir : un trait bref, pour soi comme pour les autres joueurs
 function showShotTracer(origin, direction, length = 40) {
   const points = [
@@ -308,6 +431,7 @@ function showShotTracer(origin, direction, length = 40) {
 }
 
 function shootLocal() {
+  if (isDead) return;
   const origin = camera.position.clone();
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
@@ -334,6 +458,18 @@ function startNetwork() {
       loadingEl.textContent =
         'Serveur temps réel injoignable — vérifie que mini-warzone-server tourne bien';
     },
+    onYourHp: handleHpUpdate,
+    onYouDied: handleYouDied,
+    onPlayerDied: ({ id }) => setOtherPlayerVisible(id, false),
+    onYouRespawned: handleYouRespawned,
+    onPlayerRespawned: ({ id, position }) => {
+      setOtherPlayerVisible(id, true);
+      snapOtherPlayer(id, position);
+    },
+    onCurrentLoot: (items) => items.forEach((item) => spawnLootMesh(item.id, item.position)),
+    onLootSpawned: ({ id, position }) => spawnLootMesh(id, position),
+    onLootRemoved: ({ id }) => removeLootMesh(id),
+    onHitConfirmed: showHitMarker,
   });
 }
 
@@ -361,12 +497,14 @@ function animate() {
   direction.x = Number(move.right) - Number(move.left);
   direction.normalize();
 
-  const isMoving = move.forward || move.backward || move.left || move.right;
-  if (move.forward || move.backward) velocity.z -= direction.z * speed * 10 * delta;
-  if (move.left || move.right) velocity.x -= direction.x * speed * 10 * delta;
+  const isMoving = !isDead && (move.forward || move.backward || move.left || move.right);
+  if (!isDead) {
+    if (move.forward || move.backward) velocity.z -= direction.z * speed * 10 * delta;
+    if (move.left || move.right) velocity.x -= direction.x * speed * 10 * delta;
 
-  controls.moveRight(-velocity.x * delta);
-  controls.moveForward(-velocity.z * delta);
+    controls.moveRight(-velocity.x * delta);
+    controls.moveForward(-velocity.z * delta);
+  }
 
   // --- Accroupi : on lisse la hauteur d'yeux cible plutôt que de la changer d'un coup
   const targetEyeHeight = isCrouching ? CROUCH_EYE_HEIGHT : STAND_EYE_HEIGHT;
@@ -374,22 +512,26 @@ function animate() {
 
   // --- Gravité / saut : on calcule le sol sous les pieds, puis on applique
   // soit un collage au sol (si posé), soit la gravité (si en l'air).
-  const groundY = getGroundY(camera.position.x, camera.position.z);
-  const standingY = groundY + currentEyeHeight;
+  // On coupe la gravité pendant l'écran de mort pour ne pas glisser vers le
+  // dernier point de vue au sol pendant les 3s d'attente.
+  if (!isDead) {
+    const groundY = getGroundY(camera.position.x, camera.position.z);
+    const standingY = groundY + currentEyeHeight;
 
-  verticalVelocity -= GRAVITY * delta;
-  camera.position.y += verticalVelocity * delta;
+    verticalVelocity -= GRAVITY * delta;
+    camera.position.y += verticalVelocity * delta;
 
-  if (camera.position.y <= standingY) {
-    camera.position.y = standingY;
-    verticalVelocity = 0;
-    isGrounded = true;
-  } else {
-    isGrounded = false;
+    if (camera.position.y <= standingY) {
+      camera.position.y = standingY;
+      verticalVelocity = 0;
+      isGrounded = true;
+    } else {
+      isGrounded = false;
+    }
   }
 
   // --- Visée : zoom du champ de vision + arme recentrée
-  const targetFov = isAiming ? AIM_FOV : BASE_FOV;
+  const targetFov = isAiming && !isDead ? AIM_FOV : BASE_FOV;
   if (Math.abs(camera.fov - targetFov) > 0.01) {
     camera.fov += (targetFov - camera.fov) * Math.min(1, 12 * delta);
     camera.updateProjectionMatrix();
@@ -413,6 +555,23 @@ function animate() {
   weaponGroup.rotation.x = -recoilKick * 0.35;
   weaponGroup.position.z += recoilKick * 0.06;
 
+  // --- Loot au sol : petite rotation/flottement, et ramassage par proximité
+  lootMeshes.forEach((mesh, id) => {
+    mesh.rotation.y += delta * 1.6;
+    mesh.position.y += Math.sin(clock.elapsedTime * 3 + mesh.id) * 0.0015;
+
+    if (isDead) return;
+    const dx = camera.position.x - mesh.position.x;
+    const dz = camera.position.z - mesh.position.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+    if (distance <= LOOT_COLLECT_RADIUS_CLIENT && !nearbyLootRequested.has(id)) {
+      nearbyLootRequested.add(id);
+      sendCollectLoot(id);
+    } else if (distance > LOOT_COLLECT_RADIUS_CLIENT) {
+      nearbyLootRequested.delete(id);
+    }
+  });
+
   // Autres joueurs : on lisse leur déplacement plutôt que de les téléporter
   // à chaque message reçu du serveur (ça "saccaderait" sinon).
   otherPlayers.forEach(({ mesh, targetPosition, targetRotationY }) => {
@@ -421,8 +580,9 @@ function animate() {
   });
 
   // Position locale envoyée au serveur, mais pas à chaque frame (inutile et
-  // ça surchargerait le réseau pour rien).
-  if (networkStarted) {
+  // ça surchargerait le réseau pour rien). On arrête d'en envoyer pendant
+  // qu'on est mort (le serveur ignore de toute façon les 'move' des morts).
+  if (networkStarted && !isDead) {
     timeSinceLastMoveSent += delta;
     if (timeSinceLastMoveSent >= MOVE_SEND_INTERVAL) {
       timeSinceLastMoveSent = 0;
@@ -443,4 +603,3 @@ window.addEventListener('resize', () => {
 
 // Note pour plus tard : les collisions horizontales (murs/décors) ne sont
 // toujours pas gérées — seule la verticale (sol/saut) l'est via raycast.
-// Prochaine étape logique une fois la nouvelle map en place.

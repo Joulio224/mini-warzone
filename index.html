@@ -67,7 +67,81 @@
       mix-blend-mode: difference;
       pointer-events: none;
       z-index: 5;
+      transition: transform 0.08s ease, background 0.08s ease;
     }
+    #crosshair.hit {
+      transform: scale(2.4);
+      background: #ffb400;
+    }
+
+    /* --- HUD : vie, dégâts, écran de mort ------------------------------- */
+    #hud {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      z-index: 6;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: system-ui, sans-serif;
+      color: white;
+      pointer-events: none;
+    }
+    #health-bar {
+      width: 180px;
+      height: 16px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      overflow: hidden;
+    }
+    #health-fill {
+      height: 100%;
+      width: 100%;
+      background: linear-gradient(90deg, #e63946, #ff8fa3);
+      transition: width 0.15s ease;
+    }
+    #health-text {
+      font-weight: 600;
+      font-size: 0.95rem;
+      min-width: 2.5em;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    }
+    #damage-flash {
+      position: fixed;
+      inset: 0;
+      z-index: 4;
+      background: radial-gradient(circle, transparent 40%, rgba(230, 30, 40, 0.45) 100%);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.4s ease;
+    }
+    #damage-flash.show {
+      opacity: 1;
+      transition: opacity 0s;
+    }
+    #death-screen {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: rgba(20, 0, 0, 0.55);
+      color: white;
+      font-family: system-ui, sans-serif;
+      text-align: center;
+    }
+    #death-screen[hidden] { display: none; }
+    #death-screen h2 {
+      margin: 0;
+      font-size: 2rem;
+      letter-spacing: 2px;
+      color: #ff6b6b;
+    }
+    #death-screen p { margin: 0; opacity: 0.85; }
 
     /* --- Écrans connexion / lobby -------------------------------------- */
     .screen {
@@ -238,6 +312,17 @@
 <body>
   <div id="loading">Chargement de la map…</div>
   <div id="crosshair"></div>
+  <div id="damage-flash"></div>
+
+  <div id="hud">
+    <div id="health-bar"><div id="health-fill"></div></div>
+    <span id="health-text">100</span>
+  </div>
+
+  <div id="death-screen" hidden>
+    <h2>Éliminé</h2>
+    <p id="respawn-countdown">Réapparition dans 3s…</p>
+  </div>
 
   <!-- Écran de connexion / inscription -->
   <div id="auth-screen" class="screen">
