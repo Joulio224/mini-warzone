@@ -63,6 +63,19 @@ loader.load(
       if (child.isMesh) {
         child.castShadow = true;
         child.receiveShadow = true;
+
+        // La texture de la Low Poly Arena est un petit atlas pixelisé —
+        // le filtrage "linéaire" par défaut de Three.js la flouterait.
+        // On force un filtrage au plus proche pour garder le style net,
+        // comme recommandé dans les instructions d'install de l'asset.
+        const material = child.material;
+        const maps = [material?.map, material?.emissiveMap, material?.roughnessMap];
+        maps.forEach((map) => {
+          if (!map) return;
+          map.magFilter = THREE.NearestFilter;
+          map.minFilter = THREE.NearestFilter;
+          map.needsUpdate = true;
+        });
       }
     });
     scene.add(gltf.scene);
