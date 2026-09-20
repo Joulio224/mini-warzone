@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mini Warzone</title>
+  <style>
+    html, body {
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+      height: 100%;
+    }
+    canvas { display: block; }
+
+    #menu {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      color: white;
+      font-family: system-ui, sans-serif;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 10;
+      text-align: center;
+    }
+    #menu h1 { margin: 0; font-size: 2.2rem; letter-spacing: 1px; }
+    #menu p { margin: 0; opacity: 0.8; font-size: 0.95rem; }
+    #play-button {
+      padding: 14px 28px;
+      font-size: 18px;
+      cursor: pointer;
+      background: #e63946;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+    }
+    #play-button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #loading {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      color: white;
+      font-family: system-ui, sans-serif;
+      font-size: 0.85rem;
+      z-index: 11;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 6px 10px;
+      border-radius: 4px;
+    }
+    #crosshair {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      width: 6px;
+      height: 6px;
+      margin: -3px 0 0 -3px;
+      border-radius: 50%;
+      background: white;
+      mix-blend-mode: difference;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    /* --- Écrans connexion / lobby -------------------------------------- */
+    .screen {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(160deg, #1b1b1f, #101014);
+      color: white;
+      font-family: system-ui, sans-serif;
+      overflow-y: auto;
+      padding: 24px 16px;
+      box-sizing: border-box;
+    }
+    .screen[hidden] {
+      display: none; 
+    }
+    .panel {
+      width: 100%;
+      max-width: 420px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 28px;
+      box-sizing: border-box;
+    }
+    .panel h1 {
+      margin: 0 0 20px;
+      font-size: 1.8rem;
+      letter-spacing: 1px;
+      text-align: center;
+    }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+    .tab {
+      flex: 1;
+      padding: 10px;
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 6px;
+      color: white;
+      opacity: 0.6;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    .tab.active {
+      opacity: 1;
+      border-color: #e63946;
+      background: rgba(230, 57, 70, 0.15);
+    }
+    .auth-form {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .auth-form[hidden] {
+      display: none;
+    }
+    input, select {
+      padding: 10px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(0, 0, 0, 0.3);
+      color: white;
+      font-size: 0.95rem;
+    }
+    input::placeholder { color: rgba(255, 255, 255, 0.4); }
+    button {
+      padding: 10px 16px;
+      border-radius: 6px;
+      border: none;
+      background: #e63946;
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button.secondary {
+      background: rgba(255, 255, 255, 0.12);
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .link-button {
+      background: none;
+      color: rgba(255, 255, 255, 0.7);
+      text-decoration: underline;
+      font-weight: 400;
+      padding: 4px 8px;
+    }
+    .error {
+      color: #ffb4b4;
+      font-size: 0.85rem;
+      min-height: 1.2em;
+      margin: 12px 0 0;
+    }
+
+    .lobby-panel { max-width: 720px; }
+    .lobby-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .lobby-header h1 { margin: 0; font-size: 1.4rem; }
+    .lobby-columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 560px) {
+      .lobby-columns { grid-template-columns: 1fr; }
+    }
+    .lobby-section h2 { font-size: 1.05rem; margin: 0 0 10px; }
+    .lobby-section h3 {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      opacity: 0.6;
+      margin: 16px 0 8px;
+    }
+    .inline-form { display: flex; gap: 8px; margin-bottom: 8px; }
+    .inline-form input { flex: 1; }
+    .list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+    .list li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+    .list li.muted {
+      justify-content: flex-start;
+      opacity: 0.5;
+      font-size: 0.85rem;
+    }
+    .group-item {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+    }
+    .group-title { font-weight: 600; }
+    .group-actions { display: flex; gap: 8px; align-items: center; }
+    .cta {
+      width: 100%;
+      padding: 14px;
+      font-size: 1.05rem;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">Chargement de la map…</div>
+  <div id="crosshair"></div>
+
+  <!-- Écran de connexion / inscription -->
+  <div id="auth-screen" class="screen">
+    <div class="panel">
+      <h1>Mini Warzone</h1>
+      <div class="tabs">
+        <button id="tab-login" type="button" class="tab active">Connexion</button>
+        <button id="tab-signup" type="button" class="tab">Créer un compte</button>
+      </div>
+
+      <form id="login-form" class="auth-form">
+        <input id="login-email" type="email" placeholder="Email" autocomplete="username" required />
+        <input id="login-password" type="password" placeholder="Mot de passe" autocomplete="current-password" required />
+        <button type="submit">Se connecter</button>
+      </form>
+
+      <form id="signup-form" class="auth-form" hidden>
+        <input id="signup-pseudo" type="text" placeholder="Pseudo (3 à 20 caractères)" required />
+        <input id="signup-email" type="email" placeholder="Email" autocomplete="username" required />
+        <input id="signup-password" type="password" placeholder="Mot de passe (6 caractères min.)" autocomplete="new-password" required />
+        <button type="submit">Créer mon compte</button>
+      </form>
+
+      <p id="auth-error" class="error"></p>
+    </div>
+  </div>
+
+  <!-- Lobby : compte, amis, groupes -->
+  <div id="lobby-screen" class="screen" hidden>
+    <div class="panel lobby-panel">
+      <div class="lobby-header">
+        <h1>Mini Warzone</h1>
+        <div>
+          <span id="lobby-pseudo"></span>
+          <button id="logout-button" type="button" class="link-button">Déconnexion</button>
+        </div>
+      </div>
+
+      <div class="lobby-columns">
+        <section class="lobby-section">
+          <h2>Amis</h2>
+          <form id="friend-search-form" class="inline-form">
+            <input id="friend-search-input" type="text" placeholder="Chercher un pseudo…" />
+            <button type="submit">Chercher</button>
+          </form>
+          <ul id="friend-search-results" class="list"></ul>
+
+          <h3>Demandes reçues</h3>
+          <ul id="friend-requests-list" class="list"></ul>
+
+          <h3>Mes amis</h3>
+          <ul id="friends-list" class="list"></ul>
+        </section>
+
+        <section class="lobby-section">
+          <h2>Groupes</h2>
+          <form id="group-create-form" class="inline-form">
+            <input id="group-name-input" type="text" placeholder="Nom du groupe" />
+            <button type="submit">Créer</button>
+          </form>
+          <ul id="groups-list" class="list"></ul>
+        </section>
+      </div>
+
+      <button id="enter-game-button" type="button" class="cta">Rejoindre l'arène</button>
+      <p id="lobby-error" class="error"></p>
+    </div>
+  </div>
+
+  <div id="menu">
+    <h1>Mini Warzone</h1>
+    <p>ZQSD/WASD pour bouger, souris pour regarder, Échap pour sortir</p>
+    <button id="play-button" disabled>Chargement…</button>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+  <script type="module" src="/src/lobby.js"></script>
+</body>
+</html>
