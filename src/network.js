@@ -17,13 +17,17 @@ let socket = null;
 // handlers = {
 //   onPlayerJoined, onPlayerMoved, onPlayerShoot, onPlayerLeft, onConnectError,
 //   onHpUpdate, onYouDied, onPlayerDied, onYouRespawned, onPlayerRespawned,
-//   onCurrentLoot, onLootSpawned, onLootRemoved, onHitConfirmed,
+//   onCurrentLoot, onLootSpawned, onLootRemoved, onHitConfirmed, onTeamAssigned,
 // }
 export function connectToServer(pseudo, handlers) {
   socket = io(SERVER_URL);
 
   socket.on('connect', () => {
     socket.emit('join', pseudo);
+  });
+
+  socket.on('team-assigned', (data) => {
+    handlers.onTeamAssigned?.(data);
   });
 
   socket.on('current-players', (players) => {

@@ -56,61 +56,169 @@ scene.add(fallbackGround);
 // le loot au sol, ou l'arme (enfant de la caméra, jamais concernée).
 const groundObjects = [fallbackGround];
 
+// Boîtes de collision horizontale (murs, caisses de couverture) — un
+// THREE.Box3 par obstacle. Vérifiées séparément du sol (vertical).
+const collisionBoxes = [];
+
 // ---------------------------------------------------------------------------
-// Chargement de la map (glTF/GLB) — dépose ton fichier dans public/assets/map.glb
+// Map : soit la vraie map téléchargée (map.glb), soit une petite salle
+// construite à la main (sol + murs + caisses pour se planquer), avec des
+// zones de spawn par équipe (rouge à l'ouest, bleue à l'est). Repasse
+// USE_DOWNLOADED_MAP à true pour revenir à la vraie map plus tard.
 // ---------------------------------------------------------------------------
+const USE_DOWNLOADED_MAP = false;
+
 const loadingEl = document.getElementById('loading');
 const playButton = document.getElementById('play-button');
 
-const loader = new GLTFLoader();
-loader.load(
-  '/assets/map.glb',
-  (gltf) => {
-    gltf.scene.traverse((child) => {
-      if (child.isMesh) {
-        child.castShadow = true;
-        child.receiveShadow = true;
+// Dimensions de la salle — doivent rester cohérentes avec TEAM_SPAWN_POINTS
+// dans mini-warzone-server/server.js si tu les changes.
+const ROOM_HALF_WIDTH = 15; // étendue en X
+const ROOM_HALF_DEPTH = 10; // étendue en Z
+const WALL_HEIGHT = 5;
+const WALL_THICKNESS = 0.6;
 
-        // La texture de la Low Poly Arena est un petit atlas pixelisé —
-        // le filtrage "linéaire" par défaut de Three.js la flouterait.
-        // On force un filtrage au plus proche pour garder le style net,
-        // comme recommandé dans les instructions d'install de l'asset.
-        const material = child.material;
-        const maps = [material?.map, material?.emissiveMap, material?.roughnessMap];
-        maps.forEach((map) => {
-          if (!map) return;
-          map.magFilter = THREE.NearestFilter;
-          map.minFilter = THREE.NearestFilter;
-          map.needsUpdate = true;
-        });
+const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x555b66 });
+const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3a3a });
+const coverMaterial = new THREE.MeshStandardMaterial({ color: 0x8a6d3b });
+const teamZoneMaterials = {
+  red: new THREE.MeshStandardMaterial({ color: 0x7a1f1f }),
+  blue: new THREE.MeshStandardMaterial({ color: 0x1f3f7a }),
+};
+
+function addWallMesh(centerX, centerZ, width, depth) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, WALL_HEIGHT, depth), wallMaterial);
+  mesh.position.set(centerX, WALL_HEIGHT / 2, centerZ);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  collisionBoxes.push(
+    new THREE.Box3(
+      new THREE.Vector3(centerX - width / 2, 0, centerZ - depth / 2),
+      new THREE.Vector3(centerX + width / 2, WALL_HEIGHT, centerZ + depth / 2)
+    )
+  );
+}
+
+function addCoverBox(centerX, centerZ, width, depth, height) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), coverMaterial);
+  mesh.position.set(centerX, height / 2, centerZ);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  collisionBoxes.push(
+    new THREE.Box3(
+      new THREE.Vector3(centerX - width / 2, 0, centerZ - depth / 2),
+      new THREE.Vector3(centerX + width / 2, height, centerZ + depth / 2)
+    )
+  );
+}
+
+function buildCustomRoom() {
+  // Sol (surface au niveau y = 0, pour rester cohérent avec les spawns).
+  const floor = new THREE.Mesh(
+    new THREE.BoxGeometry(ROOM_HALF_WIDTH * 2, 0.2, ROOM_HALF_DEPTH * 2),
+    floorMaterial
+  );
+  floor.position.set(0, -0.1, 0);
+  floor.receiveShadow = true;
+  scene.add(floor);
+  scene.remove(fallbackGround);
+  groundObjects.length = 0;
+  groundObjects.push(floor);
+
+  // Les 4 murs, avec un peu de recouvrement aux coins.
+  const fullWidth = ROOM_HALF_WIDTH * 2 + WALL_THICKNESS * 2;
+  const fullDepth = ROOM_HALF_DEPTH * 2;
+  addWallMesh(0, -ROOM_HALF_DEPTH, fullWidth, WALL_THICKNESS); // sud
+  addWallMesh(0, ROOM_HALF_DEPTH, fullWidth, WALL_THICKNESS); // nord
+  addWallMesh(-ROOM_HALF_WIDTH, 0, WALL_THICKNESS, fullDepth); // ouest (équipe rouge)
+  addWallMesh(ROOM_HALF_WIDTH, 0, WALL_THICKNESS, fullDepth); // est (équipe bleue)
+
+  // Zones de spawn colorées au sol, purement visuelles (pas de collision),
+  // pour repérer son côté d'un coup d'œil.
+  const zoneGeometry = new THREE.PlaneGeometry(4, ROOM_HALF_DEPTH * 2 - 1);
+  const redZone = new THREE.Mesh(zoneGeometry, teamZoneMaterials.red);
+  redZone.rotation.x = -Math.PI / 2;
+  redZone.position.set(-ROOM_HALF_WIDTH + 2.5, 0.01, 0);
+  scene.add(redZone);
+
+  const blueZone = new THREE.Mesh(zoneGeometry, teamZoneMaterials.blue);
+  blueZone.rotation.x = -Math.PI / 2;
+  blueZone.position.set(ROOM_HALF_WIDTH - 2.5, 0.01, 0);
+  scene.add(blueZone);
+
+  // Caisses de couverture au centre, pour se planquer sans bloquer
+  // complètement la vue d'un bout à l'autre de la salle.
+  const covers = [
+    { x: -6, z: -4, w: 2, d: 2, h: 1.6 },
+    { x: -6, z: 4, w: 2, d: 2, h: 1.6 },
+    { x: 0, z: -6, w: 3, d: 1.2, h: 1.6 },
+    { x: 0, z: 6, w: 3, d: 1.2, h: 1.6 },
+    { x: 6, z: -4, w: 2, d: 2, h: 1.6 },
+    { x: 6, z: 4, w: 2, d: 2, h: 1.6 },
+    { x: -2.5, z: 0, w: 1.5, d: 1.5, h: 1.6 },
+    { x: 2.5, z: 0, w: 1.5, d: 1.5, h: 1.6 },
+  ];
+  covers.forEach((c) => addCoverBox(c.x, c.z, c.w, c.d, c.h));
+}
+
+if (USE_DOWNLOADED_MAP) {
+  const loader = new GLTFLoader();
+  loader.load(
+    '/assets/map.glb',
+    (gltf) => {
+      gltf.scene.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+
+          // La texture de la Low Poly Arena est un petit atlas pixelisé —
+          // le filtrage "linéaire" par défaut de Three.js la flouterait.
+          // On force un filtrage au plus proche pour garder le style net,
+          // comme recommandé dans les instructions d'install de l'asset.
+          const material = child.material;
+          const maps = [material?.map, material?.emissiveMap, material?.roughnessMap];
+          maps.forEach((map) => {
+            if (!map) return;
+            map.magFilter = THREE.NearestFilter;
+            map.minFilter = THREE.NearestFilter;
+            map.needsUpdate = true;
+          });
+        }
+      });
+      scene.add(gltf.scene);
+      scene.remove(fallbackGround);
+
+      // La map devient le sol pour les collisions verticales (saut/gravité) ;
+      // le sol de secours ne sert plus.
+      groundObjects.length = 0;
+      groundObjects.push(gltf.scene);
+
+      loadingEl.style.display = 'none';
+      playButton.disabled = false;
+      playButton.textContent = 'Cliquer pour jouer';
+    },
+    (progress) => {
+      if (progress.total) {
+        const pct = Math.round((progress.loaded / progress.total) * 100);
+        loadingEl.textContent = `Chargement de la map… ${pct}%`;
       }
-    });
-    scene.add(gltf.scene);
-    scene.remove(fallbackGround);
-
-    // La map devient le sol pour les collisions verticales (saut/gravité) ;
-    // le sol de secours ne sert plus.
-    groundObjects.length = 0;
-    groundObjects.push(gltf.scene);
-
-    loadingEl.style.display = 'none';
-    playButton.disabled = false;
-    playButton.textContent = 'Cliquer pour jouer';
-  },
-  (progress) => {
-    if (progress.total) {
-      const pct = Math.round((progress.loaded / progress.total) * 100);
-      loadingEl.textContent = `Chargement de la map… ${pct}%`;
+    },
+    (error) => {
+      console.error('Erreur de chargement de la map :', error);
+      loadingEl.textContent =
+        "Map introuvable — dépose ton fichier .glb dans public/assets/map.glb (sol de secours actif)";
+      playButton.disabled = false;
+      playButton.textContent = 'Cliquer pour jouer (sans map)';
     }
-  },
-  (error) => {
-    console.error('Erreur de chargement de la map :', error);
-    loadingEl.textContent =
-      "Map introuvable — dépose ton fichier .glb dans public/assets/map.glb (sol de secours actif)";
-    playButton.disabled = false;
-    playButton.textContent = 'Cliquer pour jouer (sans map)';
-  }
-);
+  );
+} else {
+  buildCustomRoom();
+  loadingEl.style.display = 'none';
+  playButton.disabled = false;
+  playButton.textContent = 'Cliquer pour jouer';
+}
 
 // ---------------------------------------------------------------------------
 // Contrôles FPS (pointer lock)
@@ -296,6 +404,30 @@ function getGroundY(x, z) {
   return hits.length ? hits[0].point.y : 0;
 }
 
+// Collision horizontale simple (cercle contre boîte, résolu axe par axe pour
+// pouvoir glisser le long d'un mur au lieu de se bloquer net dessus).
+const PLAYER_RADIUS = 0.4;
+
+function collidesAt(x, z) {
+  for (const box of collisionBoxes) {
+    const closestX = THREE.MathUtils.clamp(x, box.min.x, box.max.x);
+    const closestZ = THREE.MathUtils.clamp(z, box.min.z, box.max.z);
+    const dx = x - closestX;
+    const dz = z - closestZ;
+    if (dx * dx + dz * dz < PLAYER_RADIUS * PLAYER_RADIUS) return true;
+  }
+  return false;
+}
+
+function resolveHorizontalCollisions(prevX, prevZ) {
+  if (collidesAt(camera.position.x, prevZ)) {
+    camera.position.x = prevX;
+  }
+  if (collidesAt(camera.position.x, camera.position.z)) {
+    camera.position.z = prevZ;
+  }
+}
+
 function onKeyChange(e, isDown) {
   switch (e.code) {
     case 'KeyW':
@@ -348,12 +480,13 @@ const EYE_HEIGHT = STAND_EYE_HEIGHT; // référence utilisée pour repositionner
 
 const otherPlayers = new Map(); // socket id -> { mesh, targetPosition, targetRotationY }
 
-function createPlayerMesh() {
+function createPlayerMesh(team) {
   const group = new THREE.Group();
+  const bodyColor = team === 'blue' ? 0x3a86ff : 0xe63946; // rouge par défaut
 
   const body = new THREE.Mesh(
     new THREE.CapsuleGeometry(0.35, 1.1, 4, 8),
-    new THREE.MeshStandardMaterial({ color: 0xe63946 })
+    new THREE.MeshStandardMaterial({ color: bodyColor })
   );
   body.position.y = 0.9;
   body.castShadow = true;
@@ -370,9 +503,9 @@ function createPlayerMesh() {
   return group;
 }
 
-function addOtherPlayer({ id, position, rotationY }) {
+function addOtherPlayer({ id, position, rotationY, team }) {
   if (otherPlayers.has(id)) return;
-  const mesh = createPlayerMesh();
+  const mesh = createPlayerMesh(team);
   if (position) {
     mesh.position.set(position.x, position.y - EYE_HEIGHT, position.z);
   }
@@ -441,6 +574,20 @@ function shootLocal() {
 }
 
 let networkStarted = false;
+let localTeam = null;
+const teamLabelEl = document.getElementById('team-label');
+
+function handleTeamAssigned({ team, spawn }) {
+  localTeam = team;
+  if (spawn) {
+    camera.position.set(spawn.x, spawn.y, spawn.z);
+  }
+  if (teamLabelEl) {
+    teamLabelEl.textContent = team === 'blue' ? 'Équipe Bleue' : 'Équipe Rouge';
+    teamLabelEl.classList.remove('team-red', 'team-blue');
+    teamLabelEl.classList.add(team === 'blue' ? 'team-blue' : 'team-red');
+  }
+}
 
 function startNetwork() {
   if (networkStarted) return;
@@ -449,6 +596,7 @@ function startNetwork() {
   const pseudo = auth.currentUser?.displayName || 'Joueur';
 
   connectToServer(pseudo, {
+    onTeamAssigned: handleTeamAssigned,
     onPlayerJoined: addOtherPlayer,
     onPlayerMoved: updateOtherPlayer,
     onPlayerShoot: ({ origin, direction }) => showShotTracer(origin, direction),
@@ -502,8 +650,11 @@ function animate() {
     if (move.forward || move.backward) velocity.z -= direction.z * speed * 10 * delta;
     if (move.left || move.right) velocity.x -= direction.x * speed * 10 * delta;
 
+    const prevX = camera.position.x;
+    const prevZ = camera.position.z;
     controls.moveRight(-velocity.x * delta);
     controls.moveForward(-velocity.z * delta);
+    resolveHorizontalCollisions(prevX, prevZ);
   }
 
   // --- Accroupi : on lisse la hauteur d'yeux cible plutôt que de la changer d'un coup
@@ -601,5 +752,6 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// Note pour plus tard : les collisions horizontales (murs/décors) ne sont
-// toujours pas gérées — seule la verticale (sol/saut) l'est via raycast.
+// Note pour plus tard : les caisses/murs bloquent les déplacements mais pas
+// encore les tirs (on peut tirer à travers) — pour l'instant on ne teste que
+// la collision des balles avec les joueurs, pas avec le décor.
