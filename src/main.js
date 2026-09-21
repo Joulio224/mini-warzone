@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { auth } from './firebase.js';
 import { connectToServer, sendMove, sendShoot, sendCollectLoot } from './network.js';
 
@@ -8,8 +12,41 @@ import { connectToServer, sendMove, sendShoot, sendCollectLoot } from './network
 // Scène, caméra, rendu
 // ---------------------------------------------------------------------------
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87ceeb);
-scene.fog = new THREE.Fog(0x87ceeb, 20, 150);
+const SKY_TOP_COLOR = 0x4a90d9;
+const SKY_BOTTOM_COLOR = 0xcfe8f7;
+scene.fog = new THREE.Fog(SKY_BOTTOM_COLOR, 20, 150);
+
+// Ciel en dégradé (une grosse sphère retournée, avec un shader simple qui
+// mélange deux couleurs du zénith vers l'horizon) — beaucoup plus vivant
+// qu'un fond uni, pour un coût de performance quasi nul.
+const skyMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(400, 24, 16),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    uniforms: {
+      topColor: { value: new THREE.Color(SKY_TOP_COLOR) },
+      bottomColor: { value: new THREE.Color(SKY_BOTTOM_COLOR) },
+    },
+    vertexShader: `
+      varying vec3 vWorldPosition;
+      void main() {
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        gl_Position = projectionMatrix * viewMatrix * worldPosition;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vWorldPosition;
+      uniform vec3 topColor;
+      uniform vec3 bottomColor;
+      void main() {
+        float h = normalize(vWorldPosition).y * 0.5 + 0.5;
+        gl_FragColor = vec4(mix(bottomColor, topColor, h), 1.0);
+      }
+    `,
+  })
+);
+scene.add(skyMesh);
 
 const camera = new THREE.PerspectiveCamera(
   75,
@@ -24,15 +61,34 @@ camera.position.set(0, 1.7, 5); // 1.7 ~ hauteur d'yeux debout
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
 document.body.appendChild(renderer.domElement);
+
+// Post-traitement : juste un bloom (lueur des éléments très clairs/émissifs
+// — loot, traceurs, flash de tir), avec un seuil assez haut pour ne pas
+// tout faire baver. OutputPass en dernier pour garder les bonnes couleurs
+// (tone mapping + espace de couleur) une fois passé par le composer.
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.45,
+  0.4,
+  0.85
+);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
 
 // ---------------------------------------------------------------------------
 // Lumières
 // ---------------------------------------------------------------------------
-const hemiLight = new THREE.HemisphereLight(0xffffff, 0x445566, 1.1);
+const hemiLight = new THREE.HemisphereLight(0xbfd9ff, 0x3a2f28, 1.0);
 scene.add(hemiLight);
 
-const sunLight = new THREE.DirectionalLight(0xffffff, 1.6);
+const sunLight = new THREE.DirectionalLight(0xfff2d9, 1.7);
 sunLight.position.set(30, 40, 10);
 sunLight.castShadow = true;
 sunLight.shadow.mapSize.set(2048, 2048);
@@ -40,7 +96,63 @@ sunLight.shadow.camera.left = -50;
 sunLight.shadow.camera.right = 50;
 sunLight.shadow.camera.top = 50;
 sunLight.shadow.camera.bottom = -50;
+sunLight.shadow.bias = -0.0005;
 scene.add(sunLight);
+
+// Lumière de "remplissage" douce et froide, opposée au soleil, pour éviter
+// que les zones à l'ombre soient totalement noires.
+const fillLight = new THREE.DirectionalLight(0x8fb4ff, 0.35);
+fillLight.position.set(-25, 15, -15);
+scene.add(fillLight);
+
+// ---------------------------------------------------------------------------
+// Textures procédurales (dessinées sur un <canvas>, sans fichier externe) —
+// un bruit tacheté pour le béton (sol/murs), des veines pour le bois (caisses).
+// ---------------------------------------------------------------------------
+function makeSpeckledTexture({ base, variation, size = 128, repeat = 8 }) {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = `rgb(${base[0]}, ${base[1]}, ${base[2]})`;
+  ctx.fillRect(0, 0, size, size);
+  for (let i = 0; i < size * size * 0.12; i++) {
+    const shade = (Math.random() - 0.5) * variation;
+    const r = Math.max(0, Math.min(255, base[0] + shade));
+    const g = Math.max(0, Math.min(255, base[1] + shade));
+    const b = Math.max(0, Math.min(255, base[2] + shade));
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.55)`;
+    ctx.fillRect(Math.random() * size, Math.random() * size, 1.5, 1.5);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(repeat, repeat);
+  return texture;
+}
+
+function makeWoodTexture({ base = [138, 109, 59], size = 128, repeat = 1 }) {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = `rgb(${base[0]}, ${base[1]}, ${base[2]})`;
+  ctx.fillRect(0, 0, size, size);
+  for (let y = 0; y < size; y += 4 + Math.random() * 3) {
+    const shade = (Math.random() - 0.5) * 30;
+    ctx.strokeStyle = `rgba(${base[0] + shade}, ${base[1] + shade}, ${base[2] + shade}, 0.5)`;
+    ctx.lineWidth = 1 + Math.random();
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(size, y + (Math.random() - 0.5) * 6);
+    ctx.stroke();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(repeat, repeat);
+  return texture;
+}
 
 // Sol de secours tant que la map n'est pas chargée (évite de tomber dans le vide)
 const fallbackGround = new THREE.Mesh(
@@ -78,9 +190,21 @@ const ROOM_HALF_DEPTH = 10; // étendue en Z
 const WALL_HEIGHT = 5;
 const WALL_THICKNESS = 0.6;
 
-const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x555b66 });
-const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3a3a });
-const coverMaterial = new THREE.MeshStandardMaterial({ color: 0x8a6d3b });
+const wallMaterial = new THREE.MeshStandardMaterial({
+  map: makeSpeckledTexture({ base: [85, 91, 102], variation: 22, repeat: 5 }),
+  roughness: 0.85,
+  metalness: 0.05,
+});
+const floorMaterial = new THREE.MeshStandardMaterial({
+  map: makeSpeckledTexture({ base: [58, 58, 58], variation: 26, repeat: 12 }),
+  roughness: 0.9,
+  metalness: 0.05,
+});
+const coverMaterial = new THREE.MeshStandardMaterial({
+  map: makeWoodTexture({ base: [138, 109, 59] }),
+  roughness: 0.75,
+  metalness: 0.05,
+});
 const teamZoneMaterials = {
   red: new THREE.MeshStandardMaterial({ color: 0x7a1f1f }),
   blue: new THREE.MeshStandardMaterial({ color: 0x1f3f7a }),
@@ -147,6 +271,16 @@ function buildCustomRoom() {
   blueZone.rotation.x = -Math.PI / 2;
   blueZone.position.set(ROOM_HALF_WIDTH - 2.5, 0.01, 0);
   scene.add(blueZone);
+
+  // Lumières d'ambiance colorées près de chaque zone de spawn — renforce
+  // l'identité de chaque équipe, et donne du grain au bloom.
+  const redAccentLight = new THREE.PointLight(0xff4d4d, 6, 12, 2);
+  redAccentLight.position.set(-ROOM_HALF_WIDTH + 2, 3, 0);
+  scene.add(redAccentLight);
+
+  const blueAccentLight = new THREE.PointLight(0x4d94ff, 6, 12, 2);
+  blueAccentLight.position.set(ROOM_HALF_WIDTH - 2, 3, 0);
+  scene.add(blueAccentLight);
 
   // Caisses de couverture au centre, pour se planquer sans bloquer
   // complètement la vue d'un bout à l'autre de la salle.
@@ -240,24 +374,118 @@ controls.addEventListener('unlock', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Arme (viewmodel) — placeholder en primitives, à remplacer plus tard par un
-// vrai modèle quand on aura une meilleure map/des assets plus poussés.
+// Armes (viewmodels en primitives, à remplacer plus tard par de vrais
+// modèles). Dégâts et cadence : doivent rester identiques à WEAPONS dans
+// mini-warzone-server/server.js, le serveur ne fait jamais confiance au
+// client pour ça. Touches 1/2/3 pour changer d'arme.
 // ---------------------------------------------------------------------------
+const WEAPONS = [
+  { id: 'pistol', name: 'Pistolet', damage: 18, cooldown: 0.35, autoFire: false, color: 0x2b2b2b },
+  { id: 'smg', name: 'Mitraillette', damage: 10, cooldown: 0.09, autoFire: true, color: 0x333d47 },
+  { id: 'rifle', name: 'Fusil', damage: 16, cooldown: 0.18, autoFire: true, color: 0x3a3226 },
+];
+
+function buildPistolModel(color) {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.35 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.1, 0.24), mat);
+  group.add(body);
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 0.12), mat);
+  barrel.position.set(0, 0.01, -0.18);
+  group.add(barrel);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.15, 0.06), mat);
+  grip.position.set(0, -0.1, 0.06);
+  grip.rotation.x = 0.35;
+  group.add(grip);
+  return group;
+}
+
+function buildSmgModel(color) {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.4 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.11, 0.4), mat);
+  group.add(body);
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.035, 0.18), mat);
+  barrel.position.set(0, 0.015, -0.28);
+  group.add(barrel);
+  const magazine = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.22, 0.07), mat);
+  magazine.position.set(0, -0.16, -0.02);
+  magazine.rotation.x = -0.15;
+  group.add(magazine);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.14, 0.06), mat);
+  grip.position.set(0, -0.09, 0.14);
+  grip.rotation.x = 0.35;
+  group.add(grip);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.06, 0.16), mat);
+  stock.position.set(0, 0, 0.28);
+  group.add(stock);
+  return group;
+}
+
+function buildRifleModel(color) {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.25 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.1, 0.5), mat);
+  group.add(body);
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.032, 0.3), mat);
+  barrel.position.set(0, 0.015, -0.38);
+  group.add(barrel);
+  const magazine = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.2, 0.08), mat);
+  magazine.position.set(0, -0.15, -0.08);
+  magazine.rotation.x = -0.2;
+  group.add(magazine);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.14, 0.06), mat);
+  grip.position.set(0, -0.09, 0.18);
+  grip.rotation.x = 0.35;
+  group.add(grip);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.08, 0.22), mat);
+  stock.position.set(0, 0.01, 0.36);
+  group.add(stock);
+  return group;
+}
+
+const WEAPON_BUILDERS = { pistol: buildPistolModel, smg: buildSmgModel, rifle: buildRifleModel };
+
 const weaponGroup = new THREE.Group();
-const weaponMaterial = new THREE.MeshStandardMaterial({ color: 0x2b2b2b });
+const weaponModels = WEAPONS.map((weapon) => {
+  const model = WEAPON_BUILDERS[weapon.id](weapon.color);
+  model.visible = false;
+  weaponGroup.add(model);
+  return model;
+});
 
-const gunBody = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.1, 0.32), weaponMaterial);
-gunBody.position.set(0, 0, 0);
-weaponGroup.add(gunBody);
+let currentWeaponIndex = 0;
+weaponModels[currentWeaponIndex].visible = true;
 
-const gunBarrel = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.045, 0.22), weaponMaterial);
-gunBarrel.position.set(0, 0.01, -0.27);
-weaponGroup.add(gunBarrel);
+// Petit flash bref au canon à chaque tir — attaché à l'arme donc suit
+// automatiquement ses mouvements (recul, visée, bob).
+const muzzleFlashLight = new THREE.PointLight(0xffe08a, 0, 3, 2);
+muzzleFlashLight.position.set(0, 0.02, -0.5);
+weaponGroup.add(muzzleFlashLight);
+let muzzleFlashTimeout = null;
+function showMuzzleFlash() {
+  muzzleFlashLight.intensity = 6;
+  clearTimeout(muzzleFlashTimeout);
+  muzzleFlashTimeout = setTimeout(() => {
+    muzzleFlashLight.intensity = 0;
+  }, 40);
+}
 
-const gunGrip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, 0.06), weaponMaterial);
-gunGrip.position.set(0, -0.11, 0.08);
-gunGrip.rotation.x = 0.35;
-weaponGroup.add(gunGrip);
+const weaponNameEl = document.getElementById('weapon-name');
+if (weaponNameEl) weaponNameEl.textContent = WEAPONS[currentWeaponIndex].name;
+
+function switchWeapon(index) {
+  if (index < 0 || index >= WEAPONS.length || index === currentWeaponIndex || isDead) return;
+  weaponModels[currentWeaponIndex].visible = false;
+  currentWeaponIndex = index;
+  weaponModels[currentWeaponIndex].visible = true;
+  if (weaponNameEl) weaponNameEl.textContent = WEAPONS[currentWeaponIndex].name;
+}
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Digit1') switchWeapon(0);
+  if (e.code === 'Digit2') switchWeapon(1);
+  if (e.code === 'Digit3') switchWeapon(2);
+});
 
 const WEAPON_REST_POSITION = new THREE.Vector3(0.28, -0.25, -0.55);
 const WEAPON_AIM_POSITION = new THREE.Vector3(0, -0.18, -0.35);
@@ -353,12 +581,15 @@ function createLootMesh() {
     new THREE.OctahedronGeometry(0.3, 0),
     new THREE.MeshStandardMaterial({
       color: 0xffd23f,
-      emissive: 0x554400,
+      emissive: 0xffaa00,
+      emissiveIntensity: 1.2,
       metalness: 0.3,
       roughness: 0.4,
     })
   );
   mesh.castShadow = true;
+  const glow = new THREE.PointLight(0xffaa00, 1.5, 4, 2);
+  mesh.add(glow);
   return mesh;
 }
 
@@ -463,14 +694,21 @@ document.addEventListener('keydown', (e) => onKeyChange(e, true));
 document.addEventListener('keyup', (e) => onKeyChange(e, false));
 
 // Clic droit maintenu = visée (zoom + arme recentrée + déplacement ralenti)
+// Clic gauche = tir. Maintenu, ça ne re-tire en continu que pour les armes
+// automatiques (WEAPONS[].autoFire) — géré dans animate().
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+let isMouseDown = false;
 document.addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== renderer.domElement) return;
   if (e.button === 2) isAiming = true;
-  if (e.button === 0) shootLocal();
+  if (e.button === 0) {
+    isMouseDown = true;
+    tryShoot(clock.elapsedTime);
+  }
 });
 document.addEventListener('mouseup', (e) => {
   if (e.button === 2) isAiming = false;
+  if (e.button === 0) isMouseDown = false;
 });
 
 // ---------------------------------------------------------------------------
@@ -547,29 +785,42 @@ function snapOtherPlayer(id, position) {
 }
 
 // Effet visuel de tir : un trait bref, pour soi comme pour les autres joueurs
+// Traceur en petit cylindre fin plutôt qu'une THREE.Line (les lignes WebGL
+// restent à 1px quelle que soit leur "épaisseur" demandée) — géométrie et
+// matériau réutilisés pour chaque tir, seule une nouvelle Mesh est créée.
+const tracerGeometry = new THREE.CylinderGeometry(0.012, 0.012, 1, 6, 1, true);
+tracerGeometry.translate(0, 0.5, 0);
+tracerGeometry.rotateX(Math.PI / 2); // aligné le long de +Z local
+const tracerMaterial = new THREE.MeshBasicMaterial({
+  color: 0xfff6b0,
+  transparent: true,
+  opacity: 0.9,
+});
+
 function showShotTracer(origin, direction, length = 40) {
-  const points = [
-    new THREE.Vector3(origin.x, origin.y, origin.z),
-    new THREE.Vector3(
-      origin.x + direction.x * length,
-      origin.y + direction.y * length,
-      origin.z + direction.z * length
-    ),
-  ];
-  const geometry = new THREE.BufferGeometry().setFromPoints(points);
-  const material = new THREE.LineBasicMaterial({ color: 0xfff275 });
-  const line = new THREE.Line(geometry, material);
-  scene.add(line);
-  setTimeout(() => scene.remove(line), 80);
+  const dir = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
+  const mesh = new THREE.Mesh(tracerGeometry, tracerMaterial);
+  mesh.scale.set(1, 1, length);
+  mesh.position.set(origin.x, origin.y, origin.z);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+  scene.add(mesh);
+  setTimeout(() => scene.remove(mesh), 80);
 }
 
-function shootLocal() {
+let lastShotAt = -Infinity;
+
+function tryShoot(now) {
   if (isDead) return;
+  const weapon = WEAPONS[currentWeaponIndex];
+  if (now - lastShotAt < weapon.cooldown) return;
+  lastShotAt = now;
+
   const origin = camera.position.clone();
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   showShotTracer(origin, dir);
-  sendShoot({ x: origin.x, y: origin.y, z: origin.z }, { x: dir.x, y: dir.y, z: dir.z });
+  showMuzzleFlash();
+  sendShoot({ x: origin.x, y: origin.y, z: origin.z }, { x: dir.x, y: dir.y, z: dir.z }, weapon.id);
   recoilKick = 1; // déclenche l'animation de recul de l'arme, gérée dans animate()
 }
 
@@ -697,6 +948,13 @@ function animate() {
   const bobOffset = isMoving && isGrounded ? Math.sin(bobTime) * 0.012 : 0;
   weaponGroup.position.y += bobOffset;
 
+  // --- Tir automatique : tant que le bouton est maintenu et que l'arme
+  // actuelle est en rafale, on retente à chaque frame — tryShoot() se
+  // charge lui-même de respecter la cadence de l'arme.
+  if (isMouseDown && WEAPONS[currentWeaponIndex].autoFire) {
+    tryShoot(clock.elapsedTime);
+  }
+
   // --- Recul de l'arme au tir, amorti à chaque frame
   if (recoilKick > 0.001) {
     recoilKick *= Math.max(0, 1 - 14 * delta);
@@ -742,7 +1000,7 @@ function animate() {
     }
   }
 
-  renderer.render(scene, camera);
+  composer.render();
 }
 animate();
 
@@ -750,6 +1008,7 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // Note pour plus tard : les caisses/murs bloquent les déplacements mais pas

@@ -118,6 +118,23 @@
       min-width: 2.5em;
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
     }
+    #weapon-name {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 6;
+      font-family: system-ui, sans-serif;
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: white;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.45);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+      pointer-events: none;
+    }
     #damage-flash {
       position: fixed;
       inset: 0;
@@ -330,6 +347,7 @@
     <div id="health-bar"><div id="health-fill"></div></div>
     <span id="health-text">100</span>
   </div>
+  <span id="weapon-name"></span>
 
   <div id="death-screen" hidden>
     <h2>Éliminé</h2>
@@ -406,7 +424,7 @@
 
   <div id="menu">
     <h1>Mini Warzone</h1>
-    <p>ZQSD/WASD pour bouger, souris pour regarder, Échap pour sortir</p>
+    <p>ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, 1/2/3 pour changer d'arme, Échap pour sortir</p>
     <button id="play-button" disabled>Chargement…</button>
   </div>
 

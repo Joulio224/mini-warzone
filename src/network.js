@@ -99,9 +99,9 @@ export function sendMove(position, rotationY) {
   socket.emit('move', { position, rotationY });
 }
 
-export function sendShoot(origin, direction) {
+export function sendShoot(origin, direction, weaponId) {
   if (!socket?.connected) return;
-  socket.emit('shoot', { origin, direction });
+  socket.emit('shoot', { origin, direction, weaponId });
 }
 
 export function sendCollectLoot(lootId) {
