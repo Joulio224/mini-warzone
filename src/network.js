@@ -18,6 +18,8 @@ let socket = null;
 //   onPlayerJoined, onPlayerMoved, onPlayerShoot, onPlayerLeft, onConnectError,
 //   onHpUpdate, onYouDied, onPlayerDied, onYouRespawned, onPlayerRespawned,
 //   onCurrentLoot, onLootSpawned, onLootRemoved, onHitConfirmed, onTeamAssigned,
+//   onYourShield, onPlayerShieldSteps, onYourMoney,
+//   onCurrentVests, onVestSpawned, onVestRemoved,
 // }
 export function connectToServer(pseudo, handlers) {
   socket = io(SERVER_URL);
@@ -86,6 +88,30 @@ export function connectToServer(pseudo, handlers) {
     handlers.onHitConfirmed?.(data);
   });
 
+  socket.on('your-shield', ({ shield }) => {
+    handlers.onYourShield?.(shield);
+  });
+
+  socket.on('player-shield-steps', (data) => {
+    handlers.onPlayerShieldSteps?.(data);
+  });
+
+  socket.on('your-money', ({ money }) => {
+    handlers.onYourMoney?.(money);
+  });
+
+  socket.on('current-vests', (items) => {
+    handlers.onCurrentVests?.(items);
+  });
+
+  socket.on('vest-spawned', (data) => {
+    handlers.onVestSpawned?.(data);
+  });
+
+  socket.on('vest-removed', (data) => {
+    handlers.onVestRemoved?.(data);
+  });
+
   socket.on('connect_error', (error) => {
     console.error('[network] Connexion au serveur temps réel impossible :', error.message);
     handlers.onConnectError?.(error);
@@ -107,6 +133,11 @@ export function sendShoot(origin, direction, weaponId) {
 export function sendCollectLoot(lootId) {
   if (!socket?.connected) return;
   socket.emit('collect-loot', { lootId });
+}
+
+export function sendCollectVest(vestId) {
+  if (!socket?.connected) return;
+  socket.emit('collect-vest', { vestId });
 }
 
 export function isConnected() {

@@ -118,6 +118,36 @@
       min-width: 2.5em;
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
     }
+    #shield-bar {
+      width: 90px;
+      height: 16px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      overflow: hidden;
+    }
+    #shield-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #1c4fbf, #6fb3ff);
+      transition: width 0.15s ease;
+    }
+    #money-hud {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 6;
+      font-family: system-ui, sans-serif;
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: #ffd23f;
+      padding: 6px 16px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.45);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+      pointer-events: none;
+    }
     #weapon-name {
       position: fixed;
       right: 16px;
@@ -346,8 +376,10 @@
     <span id="team-label"></span>
     <div id="health-bar"><div id="health-fill"></div></div>
     <span id="health-text">100</span>
+    <div id="shield-bar"><div id="shield-fill"></div></div>
   </div>
   <span id="weapon-name"></span>
+  <div id="money-hud"><span id="money-text">0 €</span></div>
 
   <div id="death-screen" hidden>
     <h2>Éliminé</h2>

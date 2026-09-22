@@ -6,7 +6,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { auth } from './firebase.js';
-import { connectToServer, sendMove, sendShoot, sendCollectLoot } from './network.js';
+import { connectToServer, sendMove, sendShoot, sendCollectLoot, sendCollectVest } from './network.js';
 
 // ---------------------------------------------------------------------------
 // Scène, caméra, rendu
@@ -503,8 +503,18 @@ const MAX_HP = 100;
 let localHp = MAX_HP;
 let isDead = false;
 
+// Bouclier (gilets pare-balle) — doit rester identique aux valeurs
+// équivalentes dans mini-warzone-server/server.js.
+const SHIELD_PER_VEST = 25;
+const MAX_SHIELD_VESTS = 3;
+const MAX_SHIELD = SHIELD_PER_VEST * MAX_SHIELD_VESTS;
+let localShield = 0;
+let localMoney = 0;
+
 const healthFillEl = document.getElementById('health-fill');
 const healthTextEl = document.getElementById('health-text');
+const shieldFillEl = document.getElementById('shield-fill');
+const moneyTextEl = document.getElementById('money-text');
 const damageFlashEl = document.getElementById('damage-flash');
 const deathScreenEl = document.getElementById('death-screen');
 const respawnCountdownEl = document.getElementById('respawn-countdown');
@@ -516,6 +526,18 @@ function updateHealthUI(hp) {
   healthTextEl.textContent = String(clamped);
 }
 updateHealthUI(localHp);
+
+function updateShieldUI(shield) {
+  localShield = Math.max(0, Math.min(MAX_SHIELD, shield));
+  if (shieldFillEl) shieldFillEl.style.width = `${(localShield / MAX_SHIELD) * 100}%`;
+}
+updateShieldUI(localShield);
+
+function updateMoneyUI(money) {
+  localMoney = money;
+  if (moneyTextEl) moneyTextEl.textContent = `${money} €`;
+}
+updateMoneyUI(localMoney);
 
 let damageFlashTimeout = null;
 function flashDamage() {
@@ -536,6 +558,7 @@ function handleYouDied() {
   isDead = true;
   localHp = 0;
   updateHealthUI(0);
+  updateShieldUI(0);
   weaponGroup.visible = false;
   deathScreenEl.hidden = false;
 
@@ -569,8 +592,17 @@ function handleHpUpdate(hp) {
   updateHealthUI(hp);
 }
 
+function handleShieldUpdate(shield) {
+  updateShieldUI(shield);
+}
+
+function handleMoneyUpdate(money) {
+  updateMoneyUI(money);
+}
+
 // ---------------------------------------------------------------------------
-// Loot au sol (déposé par les joueurs éliminés)
+// Loot au sol (déposé par les joueurs éliminés) — des cubes, à ramasser pour
+// regagner de la vie (HP).
 // ---------------------------------------------------------------------------
 const lootMeshes = new Map(); // lootId -> mesh
 const nearbyLootRequested = new Set(); // évite de spammer collect-loot chaque frame
@@ -578,7 +610,7 @@ const LOOT_COLLECT_RADIUS_CLIENT = 2.0;
 
 function createLootMesh() {
   const mesh = new THREE.Mesh(
-    new THREE.OctahedronGeometry(0.3, 0),
+    new THREE.BoxGeometry(0.45, 0.45, 0.45),
     new THREE.MeshStandardMaterial({
       color: 0xffd23f,
       emissive: 0xffaa00,
@@ -607,6 +639,48 @@ function removeLootMesh(id) {
   scene.remove(mesh);
   lootMeshes.delete(id);
   nearbyLootRequested.delete(id);
+}
+
+// ---------------------------------------------------------------------------
+// Gilets pare-balle au sol — réapparaissent à des points fixes après un
+// délai (contrairement au loot, qui ne tombe que des joueurs tués). Ramassés,
+// ils remplissent le bouclier par paliers de SHIELD_PER_VEST.
+// ---------------------------------------------------------------------------
+const vestMeshes = new Map(); // vestId -> mesh
+const nearbyVestRequested = new Set();
+const VEST_COLLECT_RADIUS_CLIENT = 2.0;
+
+function createVestMesh() {
+  const mesh = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.32, 0),
+    new THREE.MeshStandardMaterial({
+      color: 0x3a86ff,
+      emissive: 0x1c4fbf,
+      emissiveIntensity: 1.1,
+      metalness: 0.35,
+      roughness: 0.4,
+    })
+  );
+  mesh.castShadow = true;
+  const glow = new THREE.PointLight(0x3a86ff, 1.5, 4, 2);
+  mesh.add(glow);
+  return mesh;
+}
+
+function spawnVestMesh(id, position) {
+  if (vestMeshes.has(id)) return;
+  const mesh = createVestMesh();
+  mesh.position.set(position.x, position.y, position.z);
+  scene.add(mesh);
+  vestMeshes.set(id, mesh);
+}
+
+function removeVestMesh(id) {
+  const mesh = vestMeshes.get(id);
+  if (!mesh) return;
+  scene.remove(mesh);
+  vestMeshes.delete(id);
+  nearbyVestRequested.delete(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -718,13 +792,23 @@ const EYE_HEIGHT = STAND_EYE_HEIGHT; // référence utilisée pour repositionner
 
 const otherPlayers = new Map(); // socket id -> { mesh, targetPosition, targetRotationY }
 
-function createPlayerMesh(team) {
+const TEAM_BODY_COLORS = { red: 0xe63946, blue: 0x3a86ff };
+// Facteur de luminosité du corps selon le nombre de gilets portés (0 à 3) —
+// chaque gilet assombrit un peu plus, jusqu'à très sombre à 3 gilets.
+const SHIELD_DARKEN_FACTORS = [1, 0.72, 0.48, 0.28];
+
+function getTintedBodyColor(team, steps) {
+  const base = TEAM_BODY_COLORS[team] ?? TEAM_BODY_COLORS.red;
+  const factor = SHIELD_DARKEN_FACTORS[Math.max(0, Math.min(3, steps))];
+  return new THREE.Color(base).multiplyScalar(factor);
+}
+
+function createPlayerMesh(team, steps = 0) {
   const group = new THREE.Group();
-  const bodyColor = team === 'blue' ? 0x3a86ff : 0xe63946; // rouge par défaut
 
   const body = new THREE.Mesh(
     new THREE.CapsuleGeometry(0.35, 1.1, 4, 8),
-    new THREE.MeshStandardMaterial({ color: bodyColor })
+    new THREE.MeshStandardMaterial({ color: getTintedBodyColor(team, steps) })
   );
   body.position.y = 0.9;
   body.castShadow = true;
@@ -738,12 +822,12 @@ function createPlayerMesh(team) {
   head.castShadow = true;
   group.add(head);
 
-  return group;
+  return { group, bodyMaterial: body.material };
 }
 
-function addOtherPlayer({ id, position, rotationY, team }) {
+function addOtherPlayer({ id, position, rotationY, team, shieldSteps }) {
   if (otherPlayers.has(id)) return;
-  const mesh = createPlayerMesh(team);
+  const { group: mesh, bodyMaterial } = createPlayerMesh(team, shieldSteps || 0);
   if (position) {
     mesh.position.set(position.x, position.y - EYE_HEIGHT, position.z);
   }
@@ -751,9 +835,17 @@ function addOtherPlayer({ id, position, rotationY, team }) {
   scene.add(mesh);
   otherPlayers.set(id, {
     mesh,
+    bodyMaterial,
+    team,
     targetPosition: mesh.position.clone(),
     targetRotationY: mesh.rotation.y,
   });
+}
+
+function updatePlayerShieldSteps({ id, steps }) {
+  const entry = otherPlayers.get(id);
+  if (!entry) return;
+  entry.bodyMaterial.color.copy(getTintedBodyColor(entry.team, steps));
 }
 
 function updateOtherPlayer({ id, position, rotationY }) {
@@ -886,6 +978,12 @@ function startNetwork() {
     onLootSpawned: ({ id, position }) => spawnLootMesh(id, position),
     onLootRemoved: ({ id }) => removeLootMesh(id),
     onHitConfirmed: showHitMarker,
+    onYourShield: handleShieldUpdate,
+    onPlayerShieldSteps: updatePlayerShieldSteps,
+    onYourMoney: handleMoneyUpdate,
+    onCurrentVests: (items) => items.forEach((item) => spawnVestMesh(item.id, item.position)),
+    onVestSpawned: ({ id, position }) => spawnVestMesh(id, position),
+    onVestRemoved: ({ id }) => removeVestMesh(id),
   });
 }
 
@@ -995,6 +1093,23 @@ function animate() {
       sendCollectLoot(id);
     } else if (distance > LOOT_COLLECT_RADIUS_CLIENT) {
       nearbyLootRequested.delete(id);
+    }
+  });
+
+  // --- Gilets pare-balle au sol : même principe que le loot
+  vestMeshes.forEach((mesh, id) => {
+    mesh.rotation.y += delta * 1.6;
+    mesh.position.y += Math.sin(clock.elapsedTime * 3 + mesh.id) * 0.0015;
+
+    if (isDead || localShield >= MAX_SHIELD) return;
+    const dx = camera.position.x - mesh.position.x;
+    const dz = camera.position.z - mesh.position.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+    if (distance <= VEST_COLLECT_RADIUS_CLIENT && !nearbyVestRequested.has(id)) {
+      nearbyVestRequested.add(id);
+      sendCollectVest(id);
+    } else if (distance > VEST_COLLECT_RADIUS_CLIENT) {
+      nearbyVestRequested.delete(id);
     }
   });
 
