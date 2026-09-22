@@ -19,7 +19,8 @@ let socket = null;
 //   onHpUpdate, onYouDied, onPlayerDied, onYouRespawned, onPlayerRespawned,
 //   onCurrentLoot, onLootSpawned, onLootRemoved, onHitConfirmed, onTeamAssigned,
 //   onYourShield, onPlayerShieldSteps, onYourMoney,
-//   onCurrentVests, onVestSpawned, onVestRemoved,
+//   onCurrentVests, onVestSpawned, onVestRemoved, onYourVestCount,
+//   onCurrentWeaponPickups, onWeaponPickupSpawned, onWeaponPickupRemoved, onYourWeapons,
 // }
 export function connectToServer(pseudo, handlers) {
   socket = io(SERVER_URL);
@@ -112,6 +113,26 @@ export function connectToServer(pseudo, handlers) {
     handlers.onVestRemoved?.(data);
   });
 
+  socket.on('your-vest-count', ({ count }) => {
+    handlers.onYourVestCount?.(count);
+  });
+
+  socket.on('current-weapon-pickups', (items) => {
+    handlers.onCurrentWeaponPickups?.(items);
+  });
+
+  socket.on('weapon-pickup-spawned', (data) => {
+    handlers.onWeaponPickupSpawned?.(data);
+  });
+
+  socket.on('weapon-pickup-removed', (data) => {
+    handlers.onWeaponPickupRemoved?.(data);
+  });
+
+  socket.on('your-weapons', ({ weapons }) => {
+    handlers.onYourWeapons?.(weapons);
+  });
+
   socket.on('connect_error', (error) => {
     console.error('[network] Connexion au serveur temps réel impossible :', error.message);
     handlers.onConnectError?.(error);
@@ -138,6 +159,16 @@ export function sendCollectLoot(lootId) {
 export function sendCollectVest(vestId) {
   if (!socket?.connected) return;
   socket.emit('collect-vest', { vestId });
+}
+
+export function sendUseVest() {
+  if (!socket?.connected) return;
+  socket.emit('use-vest');
+}
+
+export function sendCollectWeapon(pickupId) {
+  if (!socket?.connected) return;
+  socket.emit('collect-weapon', { pickupId });
 }
 
 export function isConnected() {

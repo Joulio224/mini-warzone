@@ -6,7 +6,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { auth } from './firebase.js';
-import { connectToServer, sendMove, sendShoot, sendCollectLoot, sendCollectVest } from './network.js';
+import { connectToServer, sendMove, sendShoot, sendCollectLoot, sendCollectVest, sendUseVest, sendCollectWeapon } from './network.js';
 
 // ---------------------------------------------------------------------------
 // Scène, caméra, rendu
@@ -384,6 +384,9 @@ const WEAPONS = [
   { id: 'smg', name: 'Mitraillette', damage: 10, cooldown: 0.09, autoFire: true, color: 0x333d47 },
   { id: 'rifle', name: 'Fusil', damage: 16, cooldown: 0.18, autoFire: true, color: 0x3a3226 },
 ];
+// Couleurs des pickups au sol (bien plus vives que la couleur "réaliste" du
+// modèle en main ci-dessus, pour qu'on les repère facilement à distance).
+const WEAPON_PICKUP_COLORS = { smg: 0x00e5ff, rifle: 0xff9f1c };
 
 function buildPistolModel(color) {
   const group = new THREE.Group();
@@ -454,6 +457,10 @@ const weaponModels = WEAPONS.map((weapon) => {
   return model;
 });
 
+// currentWeaponIndex reste l'index dans WEAPONS du modèle affiché (utile
+// pour weaponModels) ; currentSlot (déclaré plus haut, 0/1/2) est ce que
+// l'UI et les entrées clavier/souris utilisent pour savoir quel slot du
+// stuff est actif.
 let currentWeaponIndex = 0;
 weaponModels[currentWeaponIndex].visible = true;
 
@@ -471,20 +478,29 @@ function showMuzzleFlash() {
   }, 40);
 }
 
-const weaponNameEl = document.getElementById('weapon-name');
-if (weaponNameEl) weaponNameEl.textContent = WEAPONS[currentWeaponIndex].name;
+// Sélectionne un slot du stuff (0/1 = armes, 2 = gilets). Pour un slot
+// d'arme vide (pas encore ramassée) ou en pleine mort, on ignore — on ne
+// peut pas "sélectionner" une arme qu'on n'a pas.
+function selectSlot(slot) {
+  if (isDead || slot < 0 || slot > 2) return;
+  if (slot < 2 && !myWeapons[slot]) return; // rien dans ce slot d'arme
 
-function switchWeapon(index) {
-  if (index < 0 || index >= WEAPONS.length || index === currentWeaponIndex || isDead) return;
-  weaponModels[currentWeaponIndex].visible = false;
-  currentWeaponIndex = index;
-  weaponModels[currentWeaponIndex].visible = true;
-  if (weaponNameEl) weaponNameEl.textContent = WEAPONS[currentWeaponIndex].name;
+  currentSlot = slot;
+
+  if (slot === 2) {
+    weaponGroup.visible = false;
+  } else {
+    weaponModels[currentWeaponIndex].visible = false;
+    currentWeaponIndex = WEAPONS.findIndex((w) => w.id === myWeapons[slot]);
+    weaponModels[currentWeaponIndex].visible = true;
+    weaponGroup.visible = true;
+  }
+  updateInventoryUI();
 }
 document.addEventListener('keydown', (e) => {
-  if (e.code === 'Digit1') switchWeapon(0);
-  if (e.code === 'Digit2') switchWeapon(1);
-  if (e.code === 'Digit3') switchWeapon(2);
+  if (e.code === 'Digit1') selectSlot(0);
+  if (e.code === 'Digit2') selectSlot(1);
+  if (e.code === 'Digit3') selectSlot(2);
 });
 
 const WEAPON_REST_POSITION = new THREE.Vector3(0.28, -0.25, -0.55);
@@ -506,10 +522,18 @@ let isDead = false;
 // Bouclier (gilets pare-balle) — doit rester identique aux valeurs
 // équivalentes dans mini-warzone-server/server.js.
 const SHIELD_PER_VEST = 25;
-const MAX_SHIELD_VESTS = 3;
+const MAX_SHIELD_VESTS = 2;
 const MAX_SHIELD = SHIELD_PER_VEST * MAX_SHIELD_VESTS;
 let localShield = 0;
 let localMoney = 0;
+
+// "Stuff" du joueur : 2 slots d'arme (le 0 est toujours le pistolet de
+// départ, jamais perdu) + un compteur de gilets en réserve (max 2, à
+// utiliser au clic droit pour les convertir en bouclier). currentSlot vaut
+// 0/1 pour les armes, 2 pour les gilets — sélection via les touches 1/2/3.
+let myWeapons = ['pistol', null];
+let myVestCount = 0;
+let currentSlot = 0;
 
 const healthFillEl = document.getElementById('health-fill');
 const healthTextEl = document.getElementById('health-text');
@@ -519,6 +543,11 @@ const damageFlashEl = document.getElementById('damage-flash');
 const deathScreenEl = document.getElementById('death-screen');
 const respawnCountdownEl = document.getElementById('respawn-countdown');
 const crosshairEl = document.getElementById('crosshair');
+const invSlotEls = [
+  document.getElementById('slot-weapon1'),
+  document.getElementById('slot-weapon2'),
+  document.getElementById('slot-vest'),
+];
 
 function updateHealthUI(hp) {
   const clamped = Math.max(0, Math.min(MAX_HP, hp));
@@ -538,6 +567,46 @@ function updateMoneyUI(money) {
   if (moneyTextEl) moneyTextEl.textContent = `${money} €`;
 }
 updateMoneyUI(localMoney);
+
+function weaponLabel(weaponId) {
+  const weapon = WEAPONS.find((w) => w.id === weaponId);
+  return weapon ? weapon.name : 'Vide';
+}
+
+function updateInventoryUI() {
+  const slotContents = [myWeapons[0], myWeapons[1], null];
+  invSlotEls.forEach((el, index) => {
+    if (!el) return;
+    el.classList.toggle('active', index === currentSlot);
+    const label = el.querySelector('.inv-label');
+    if (!label) return;
+    if (index < 2) {
+      const weaponId = slotContents[index];
+      el.classList.toggle('empty', !weaponId);
+      label.textContent = weaponId ? weaponLabel(weaponId) : 'Vide';
+    } else {
+      el.classList.toggle('empty', myVestCount === 0);
+      label.textContent = `Gilets x${myVestCount}`;
+    }
+  });
+}
+updateInventoryUI();
+
+function handleWeaponsUpdate(weapons) {
+  myWeapons = weapons;
+  // Si le slot actif vient de perdre son arme (ex: reset à la mort), on
+  // retombe sur le pistolet plutôt que de rester bloqué sur un slot vide.
+  if (currentSlot < 2 && !myWeapons[currentSlot]) {
+    selectSlot(0);
+  } else {
+    updateInventoryUI();
+  }
+}
+
+function handleVestCountUpdate(count) {
+  myVestCount = count;
+  updateInventoryUI();
+}
 
 let damageFlashTimeout = null;
 function flashDamage() {
@@ -559,8 +628,10 @@ function handleYouDied() {
   localHp = 0;
   updateHealthUI(0);
   updateShieldUI(0);
+  myVestCount = 0;
   weaponGroup.visible = false;
   deathScreenEl.hidden = false;
+  updateInventoryUI();
 
   let secondsLeft = 3;
   respawnCountdownEl.textContent = `Réapparition dans ${secondsLeft}s…`;
@@ -577,7 +648,8 @@ function handleYouRespawned({ position }) {
   isDead = false;
   localHp = MAX_HP;
   updateHealthUI(MAX_HP);
-  weaponGroup.visible = true;
+  myWeapons = ['pistol', null];
+  selectSlot(0);
   deathScreenEl.hidden = true;
   clearInterval(respawnInterval);
   verticalVelocity = 0;
@@ -647,7 +719,6 @@ function removeLootMesh(id) {
 // ils remplissent le bouclier par paliers de SHIELD_PER_VEST.
 // ---------------------------------------------------------------------------
 const vestMeshes = new Map(); // vestId -> mesh
-const nearbyVestRequested = new Set();
 const VEST_COLLECT_RADIUS_CLIENT = 2.0;
 
 function createVestMesh() {
@@ -680,7 +751,47 @@ function removeVestMesh(id) {
   if (!mesh) return;
   scene.remove(mesh);
   vestMeshes.delete(id);
-  nearbyVestRequested.delete(id);
+}
+
+// ---------------------------------------------------------------------------
+// Armes ramassables au sol — même principe que les gilets (points fixes,
+// réapparition différée), mais remplissent le slot 2 du stuff au lieu du
+// bouclier. Couleur = celle de l'arme réelle (voir WEAPONS plus bas).
+// ---------------------------------------------------------------------------
+const weaponPickupMeshes = new Map(); // pickupId -> { mesh, weaponId }
+const WEAPON_PICKUP_COLLECT_RADIUS_CLIENT = 2.0;
+
+function createWeaponPickupMesh(weaponId) {
+  const color = WEAPON_PICKUP_COLORS[weaponId] || 0xffffff;
+  const mesh = new THREE.Mesh(
+    new THREE.ConeGeometry(0.28, 0.5, 5),
+    new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.6,
+      metalness: 0.4,
+      roughness: 0.35,
+    })
+  );
+  mesh.castShadow = true;
+  const glow = new THREE.PointLight(color, 1.3, 4, 2);
+  mesh.add(glow);
+  return mesh;
+}
+
+function spawnWeaponPickupMesh(id, weaponId, position) {
+  if (weaponPickupMeshes.has(id)) return;
+  const mesh = createWeaponPickupMesh(weaponId);
+  mesh.position.set(position.x, position.y, position.z);
+  scene.add(mesh);
+  weaponPickupMeshes.set(id, { mesh, weaponId });
+}
+
+function removeWeaponPickupMesh(id) {
+  const entry = weaponPickupMeshes.get(id);
+  if (!entry) return;
+  scene.remove(entry.mesh);
+  weaponPickupMeshes.delete(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -767,14 +878,22 @@ function onKeyChange(e, isDown) {
 document.addEventListener('keydown', (e) => onKeyChange(e, true));
 document.addEventListener('keyup', (e) => onKeyChange(e, false));
 
-// Clic droit maintenu = visée (zoom + arme recentrée + déplacement ralenti)
+// Clic droit maintenu = viser (slot arme) — zoom + arme recentrée +
+// déplacement ralenti. Clic droit sur le slot gilets = consomme un gilet en
+// réserve pour regagner du bouclier (action unique, pas un maintien).
 // Clic gauche = tir. Maintenu, ça ne re-tire en continu que pour les armes
 // automatiques (WEAPONS[].autoFire) — géré dans animate().
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 let isMouseDown = false;
 document.addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== renderer.domElement) return;
-  if (e.button === 2) isAiming = true;
+  if (e.button === 2) {
+    if (currentSlot === 2) {
+      if (myVestCount > 0) sendUseVest();
+    } else {
+      isAiming = true;
+    }
+  }
   if (e.button === 0) {
     isMouseDown = true;
     tryShoot(clock.elapsedTime);
@@ -783,6 +902,37 @@ document.addEventListener('mousedown', (e) => {
 document.addEventListener('mouseup', (e) => {
   if (e.button === 2) isAiming = false;
   if (e.button === 0) isMouseDown = false;
+});
+
+// Touche T = ramasser l'objet au sol le plus proche (arme ou gilet), à
+// portée. Un seul ramassage par appui (pas de spam en la maintenant).
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyT' || isDead) return;
+
+  let closestId = null;
+  let closestType = null;
+  let closestDist = Infinity;
+
+  weaponPickupMeshes.forEach(({ mesh }, id) => {
+    const dist = camera.position.distanceTo(mesh.position);
+    if (dist <= WEAPON_PICKUP_COLLECT_RADIUS_CLIENT && dist < closestDist) {
+      closestDist = dist;
+      closestId = id;
+      closestType = 'weapon';
+    }
+  });
+  vestMeshes.forEach((mesh, id) => {
+    const dist = camera.position.distanceTo(mesh.position);
+    if (dist <= VEST_COLLECT_RADIUS_CLIENT && dist < closestDist) {
+      closestDist = dist;
+      closestId = id;
+      closestType = 'vest';
+    }
+  });
+
+  if (!closestId) return;
+  if (closestType === 'weapon') sendCollectWeapon(closestId);
+  else sendCollectVest(closestId);
 });
 
 // ---------------------------------------------------------------------------
@@ -917,7 +1067,7 @@ function nearestObstacleDistance(origin, direction) {
 let lastShotAt = -Infinity;
 
 function tryShoot(now) {
-  if (isDead) return;
+  if (isDead || currentSlot === 2) return;
   const weapon = WEAPONS[currentWeaponIndex];
   if (now - lastShotAt < weapon.cooldown) return;
   lastShotAt = now;
@@ -984,6 +1134,12 @@ function startNetwork() {
     onCurrentVests: (items) => items.forEach((item) => spawnVestMesh(item.id, item.position)),
     onVestSpawned: ({ id, position }) => spawnVestMesh(id, position),
     onVestRemoved: ({ id }) => removeVestMesh(id),
+    onYourVestCount: handleVestCountUpdate,
+    onCurrentWeaponPickups: (items) =>
+      items.forEach((item) => spawnWeaponPickupMesh(item.id, item.weaponId, item.position)),
+    onWeaponPickupSpawned: ({ id, weaponId, position }) => spawnWeaponPickupMesh(id, weaponId, position),
+    onWeaponPickupRemoved: ({ id }) => removeWeaponPickupMesh(id),
+    onYourWeapons: handleWeaponsUpdate,
   });
 }
 
@@ -1096,21 +1252,17 @@ function animate() {
     }
   });
 
-  // --- Gilets pare-balle au sol : même principe que le loot
-  vestMeshes.forEach((mesh, id) => {
+  // --- Gilets pare-balle au sol : juste l'animation (flottement/rotation).
+  // Le ramassage se fait maintenant à la touche T, plus automatiquement.
+  vestMeshes.forEach((mesh) => {
     mesh.rotation.y += delta * 1.6;
     mesh.position.y += Math.sin(clock.elapsedTime * 3 + mesh.id) * 0.0015;
+  });
 
-    if (isDead || localShield >= MAX_SHIELD) return;
-    const dx = camera.position.x - mesh.position.x;
-    const dz = camera.position.z - mesh.position.z;
-    const distance = Math.sqrt(dx * dx + dz * dz);
-    if (distance <= VEST_COLLECT_RADIUS_CLIENT && !nearbyVestRequested.has(id)) {
-      nearbyVestRequested.add(id);
-      sendCollectVest(id);
-    } else if (distance > VEST_COLLECT_RADIUS_CLIENT) {
-      nearbyVestRequested.delete(id);
-    }
+  // --- Armes au sol : même animation, ramassage aussi à la touche T.
+  weaponPickupMeshes.forEach(({ mesh }) => {
+    mesh.rotation.y += delta * 1.6;
+    mesh.position.y += Math.sin(clock.elapsedTime * 3 + mesh.id) * 0.0015;
   });
 
   // Autres joueurs : on lisse leur déplacement plutôt que de les téléporter

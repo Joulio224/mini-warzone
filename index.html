@@ -148,22 +148,52 @@
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
       pointer-events: none;
     }
-    #weapon-name {
+    #inventory-hud {
       position: fixed;
       right: 16px;
       bottom: 16px;
       z-index: 6;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
       font-family: system-ui, sans-serif;
-      font-weight: 700;
-      font-size: 0.95rem;
-      color: white;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+    }
+    .inv-slot {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       padding: 6px 12px;
       border-radius: 6px;
       background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: white;
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+      min-width: 130px;
+      transition: background 0.15s ease, border-color 0.15s ease;
       pointer-events: none;
+    }
+    .inv-slot.active {
+      background: rgba(255, 210, 63, 0.25);
+      border-color: #ffd23f;
+    }
+    .inv-slot.empty .inv-label { opacity: 0.5; }
+    .inv-key {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.15);
+      font-size: 0.8rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .inv-label {
+      font-weight: 600;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
     #damage-flash {
       position: fixed;
@@ -378,7 +408,17 @@
     <span id="health-text">100</span>
     <div id="shield-bar"><div id="shield-fill"></div></div>
   </div>
-  <span id="weapon-name"></span>
+  <div id="inventory-hud">
+    <div id="slot-weapon1" class="inv-slot active">
+      <span class="inv-key">1</span><span class="inv-label">Pistolet</span>
+    </div>
+    <div id="slot-weapon2" class="inv-slot empty">
+      <span class="inv-key">2</span><span class="inv-label">Vide</span>
+    </div>
+    <div id="slot-vest" class="inv-slot empty">
+      <span class="inv-key">3</span><span class="inv-label">Gilets x0</span>
+    </div>
+  </div>
   <div id="money-hud"><span id="money-text">0 €</span></div>
 
   <div id="death-screen" hidden>
