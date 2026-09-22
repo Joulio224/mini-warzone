@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
-// Groupes : créer un groupe, y ajouter des amis, le quitter
+// Groupes : créer un groupe, inviter des amis (demande à accepter), quitter
 // ---------------------------------------------------------------------------
 // groups/{groupId} { name, ownerId, members: [uid...], memberPseudos: {uid: pseudo}, createdAt }
+// groupInvites/{inviteId} { groupId, groupName, fromUid, fromPseudo, toUid, toPseudo, status, createdAt }
 import {
   collection,
   doc,
@@ -41,7 +42,7 @@ export function listenMyGroups(myUid, callback) {
   });
 }
 
-export async function addMemberToGroup(groupId, memberUid, memberPseudo) {
+async function addMemberToGroup(groupId, memberUid, memberPseudo) {
   await updateDoc(doc(db, 'groups', groupId), {
     members: arrayUnion(memberUid),
     [`memberPseudos.${memberUid}`]: memberPseudo,
@@ -56,4 +57,47 @@ export async function leaveGroup(groupId, myUid) {
 
 export async function deleteGroup(groupId) {
   await deleteDoc(doc(db, 'groups', groupId));
+}
+
+// --- Invitations -------------------------------------------------------------
+// Même logique que les demandes d'ami : on ne rejoint plus un groupe direct,
+// quelqu'un doit accepter une invitation d'abord.
+
+function inviteDocId(groupId, toUid) {
+  return `${groupId}_${toUid}`;
+}
+
+export async function sendGroupInvite(groupId, groupName, fromUid, fromPseudo, toUid, toPseudo) {
+  if (fromUid === toUid) throw new Error("Tu ne peux pas t'inviter toi-même.");
+  await setDoc(doc(db, 'groupInvites', inviteDocId(groupId, toUid)), {
+    groupId,
+    groupName,
+    fromUid,
+    fromPseudo,
+    toUid,
+    toPseudo,
+    status: 'pending',
+    createdAt: serverTimestamp(),
+  });
+}
+
+// callback([{ id, groupId, groupName, fromUid, fromPseudo, toUid, toPseudo, status, createdAt }])
+export function listenIncomingGroupInvites(myUid, callback) {
+  const q = query(
+    collection(db, 'groupInvites'),
+    where('toUid', '==', myUid),
+    where('status', '==', 'pending')
+  );
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  });
+}
+
+export async function acceptGroupInvite(invite) {
+  await addMemberToGroup(invite.groupId, invite.toUid, invite.toPseudo);
+  await deleteDoc(doc(db, 'groupInvites', invite.id));
+}
+
+export async function declineGroupInvite(inviteId) {
+  await deleteDoc(doc(db, 'groupInvites', inviteId));
 }

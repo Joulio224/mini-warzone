@@ -807,6 +807,21 @@ function showShotTracer(origin, direction, length = 40) {
   setTimeout(() => scene.remove(mesh), 80);
 }
 
+const shotRaycaster = new THREE.Raycaster();
+const tmpVec3 = new THREE.Vector3();
+function nearestObstacleDistance(origin, direction) {
+  shotRaycaster.set(origin, direction);
+  let nearest = Infinity;
+  for (const box of collisionBoxes) {
+    const hitPoint = shotRaycaster.ray.intersectBox(box, tmpVec3);
+    if (hitPoint) {
+      const dist = origin.distanceTo(hitPoint);
+      if (dist < nearest) nearest = dist;
+    }
+  }
+  return nearest;
+}
+
 let lastShotAt = -Infinity;
 
 function tryShoot(now) {
@@ -818,7 +833,8 @@ function tryShoot(now) {
   const origin = camera.position.clone();
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  showShotTracer(origin, dir);
+  const maxLength = Math.min(nearestObstacleDistance(origin, dir), 60);
+  showShotTracer(origin, dir, maxLength);
   showMuzzleFlash();
   sendShoot({ x: origin.x, y: origin.y, z: origin.z }, { x: dir.x, y: dir.y, z: dir.z }, weapon.id);
   recoilKick = 1; // déclenche l'animation de recul de l'arme, gérée dans animate()
@@ -850,7 +866,8 @@ function startNetwork() {
     onTeamAssigned: handleTeamAssigned,
     onPlayerJoined: addOtherPlayer,
     onPlayerMoved: updateOtherPlayer,
-    onPlayerShoot: ({ origin, direction }) => showShotTracer(origin, direction),
+    onPlayerShoot: ({ origin, direction, maxLength }) =>
+      showShotTracer(origin, direction, Number.isFinite(maxLength) ? maxLength : 40),
     onPlayerLeft: removeOtherPlayer,
     onConnectError: () => {
       loadingEl.style.display = 'block';
@@ -1011,6 +1028,7 @@ window.addEventListener('resize', () => {
   composer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// Note pour plus tard : les caisses/murs bloquent les déplacements mais pas
-// encore les tirs (on peut tirer à travers) — pour l'instant on ne teste que
-// la collision des balles avec les joueurs, pas avec le décor.
+// Note pour plus tard : murs/caisses bloquent maintenant aussi bien les
+// déplacements que les tirs (portée coupée par nearestObstacleDistance côté
+// client, et vérifiée en autorité côté serveur dans nearestObstacleDistance
+// de server.js — les deux listes de boîtes doivent rester identiques).

@@ -14,9 +14,12 @@ import {
 import {
   createGroup,
   listenMyGroups,
-  addMemberToGroup,
   leaveGroup,
   deleteGroup,
+  sendGroupInvite,
+  listenIncomingGroupInvites,
+  acceptGroupInvite,
+  declineGroupInvite,
 } from './groups.js';
 
 // --- Éléments DOM ------------------------------------------------------------
@@ -43,6 +46,7 @@ const friendsList = document.getElementById('friends-list');
 const groupCreateForm = document.getElementById('group-create-form');
 const groupNameInput = document.getElementById('group-name-input');
 const groupsList = document.getElementById('groups-list');
+const groupInvitesList = document.getElementById('group-invites-list');
 
 const enterGameButton = document.getElementById('enter-game-button');
 
@@ -245,6 +249,38 @@ groupCreateForm.addEventListener('submit', async (e) => {
   }
 });
 
+function renderIncomingGroupInvites(invites) {
+  if (!currentUser) return;
+  groupInvitesList.innerHTML = '';
+  if (invites.length === 0) {
+    groupInvitesList.appendChild(emptyItem('Aucune invitation en attente.'));
+    return;
+  }
+  invites.forEach((invite) => {
+    const li = document.createElement('li');
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = `${invite.groupName} — invité par ${invite.fromPseudo}`;
+    li.appendChild(nameSpan);
+
+    const acceptButton = document.createElement('button');
+    acceptButton.textContent = 'Rejoindre';
+    acceptButton.addEventListener('click', () => {
+      acceptGroupInvite(invite).catch((error) => {
+        lobbyError.textContent = error.message;
+      });
+    });
+
+    const declineButton = document.createElement('button');
+    declineButton.textContent = 'Refuser';
+    declineButton.className = 'secondary';
+    declineButton.addEventListener('click', () => declineGroupInvite(invite.id));
+
+    li.appendChild(acceptButton);
+    li.appendChild(declineButton);
+    groupInvitesList.appendChild(li);
+  });
+}
+
 function renderGroups(groups) {
   if (!currentUser) return;
   currentGroups = groups;
@@ -278,7 +314,7 @@ function renderGroups(groups) {
       const select = document.createElement('select');
       const placeholder = document.createElement('option');
       placeholder.value = '';
-      placeholder.textContent = 'Ajouter un ami…';
+      placeholder.textContent = 'Inviter un ami…';
       select.appendChild(placeholder);
       friendsNotInGroup.forEach((f) => {
         const option = document.createElement('option');
@@ -287,9 +323,18 @@ function renderGroups(groups) {
         select.appendChild(option);
       });
       select.addEventListener('change', () => {
-        if (!select.value) return;
+        if (!select.value || !currentUser) return;
         const friend = friendsNotInGroup.find((f) => f.uid === select.value);
-        addMemberToGroup(group.id, friend.uid, friend.pseudo);
+        sendGroupInvite(
+          group.id,
+          group.name,
+          currentUser.uid,
+          currentUser.displayName,
+          friend.uid,
+          friend.pseudo
+        ).catch((error) => {
+          lobbyError.textContent = error.message;
+        });
         select.value = '';
       });
       actions.appendChild(select);
@@ -334,4 +379,5 @@ onAuthChange((user) => {
   unsubscribers.push(listenIncomingRequests(user.uid, renderIncomingRequests));
   unsubscribers.push(listenFriends(user.uid, renderFriends));
   unsubscribers.push(listenMyGroups(user.uid, renderGroups));
+  unsubscribers.push(listenIncomingGroupInvites(user.uid, renderIncomingGroupInvites));
 });
