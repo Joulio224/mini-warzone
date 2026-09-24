@@ -55,6 +55,24 @@
       padding: 6px 10px;
       border-radius: 4px;
     }
+    #shop-prompt {
+      position: fixed;
+      top: calc(50% + 40px);
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      color: white;
+      font-family: system-ui, sans-serif;
+      font-size: 0.9rem;
+      font-weight: 600;
+      background: rgba(0, 0, 0, 0.55);
+      border: 1px solid rgba(255, 210, 63, 0.5);
+      padding: 6px 14px;
+      border-radius: 6px;
+      z-index: 6;
+      pointer-events: none;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    }
     #crosshair {
       position: fixed;
       top: 50%;
@@ -72,6 +90,10 @@
     #crosshair.hit {
       transform: scale(2.4);
       background: #ffb400;
+    }
+    #crosshair.headshot {
+      transform: scale(3.2);
+      background: #ff3b3b;
     }
 
     /* --- HUD : vie, dégâts, écran de mort ------------------------------- */
@@ -395,10 +417,73 @@
       font-size: 1.05rem;
       margin-top: 4px;
     }
+
+    /* --- Boutique (économie) -------------------------------------------- */
+    .shop-panel {
+      max-width: 640px;
+      max-height: 86vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .shop-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .shop-header h1 { margin: 0; font-size: 1.4rem; }
+    .shop-money {
+      font-weight: 700;
+      font-size: 1.05rem;
+      color: #ffd23f;
+    }
+    .shop-items {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+      padding-right: 4px;
+      margin-bottom: 16px;
+      flex: 1;
+      min-height: 120px;
+    }
+    .shop-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-left: 4px solid var(--rarity-color, rgba(255, 255, 255, 0.2));
+    }
+    .shop-item-info { flex: 1; min-width: 0; }
+    .shop-item-name { font-weight: 600; font-size: 0.95rem; }
+    .shop-item-desc { font-size: 0.78rem; opacity: 0.65; margin-top: 2px; }
+    .shop-item-stats { font-size: 0.78rem; opacity: 0.8; margin-top: 4px; }
+    .shop-item-buy {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .shop-item-price { font-weight: 700; font-size: 0.9rem; color: #ffd23f; }
+    .shop-item-buy button { min-width: 100px; }
+
+    /* Pastille de rareté (gris/bleu/rouge) dans les slots d'inventaire */
+    .inv-rarity-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: transparent;
+      flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
   <div id="loading">Chargement de la map…</div>
+  <div id="shop-prompt">B — Ouvrir la boutique</div>
   <div id="crosshair"></div>
   <div id="damage-flash"></div>
 
@@ -410,13 +495,13 @@
   </div>
   <div id="inventory-hud">
     <div id="slot-weapon1" class="inv-slot active">
-      <span class="inv-key">1</span><span class="inv-label">Pistolet</span>
+      <span class="inv-key">1</span><span class="inv-rarity-dot"></span><span class="inv-label">Pistolet</span>
     </div>
     <div id="slot-weapon2" class="inv-slot empty">
-      <span class="inv-key">2</span><span class="inv-label">Vide</span>
+      <span class="inv-key">2</span><span class="inv-rarity-dot"></span><span class="inv-label">Vide</span>
     </div>
     <div id="slot-vest" class="inv-slot empty">
-      <span class="inv-key">3</span><span class="inv-label">Gilets x0</span>
+      <span class="inv-key">3</span><span class="inv-label">Gilets x0/2</span>
     </div>
   </div>
   <div id="money-hud"><span id="money-text">0 €</span></div>
@@ -424,6 +509,24 @@
   <div id="death-screen" hidden>
     <h2>Éliminé</h2>
     <p id="respawn-countdown">Réapparition dans 3s…</p>
+  </div>
+
+  <!-- Boutique : pas encore de magasin physique dans la salle 3D, s'ouvre
+       pour l'instant avec la touche B (voir main.js, section "Boutique"). -->
+  <div id="shop-screen" class="screen" hidden>
+    <div class="panel shop-panel">
+      <div class="shop-header">
+        <h1>Boutique</h1>
+        <div class="shop-money"><span id="shop-money-text">0 €</span></div>
+      </div>
+      <div class="tabs">
+        <button type="button" class="tab active" data-shop-tab="weapon">Armes</button>
+        <button type="button" class="tab" data-shop-tab="vest">Gilets</button>
+        <button type="button" class="tab" data-shop-tab="ability">Capacités</button>
+      </div>
+      <div id="shop-items" class="shop-items"></div>
+      <button id="shop-close-button" type="button" class="cta secondary">Fermer (B)</button>
+    </div>
   </div>
 
   <!-- Écran de connexion / inscription -->
@@ -500,7 +603,7 @@
 
   <div id="menu">
     <h1>Mini Warzone</h1>
-    <p>ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, 1/2/3 pour changer d'arme, Échap pour sortir</p>
+    <p>ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, 1/2/3 pour changer d'arme, T pour ramasser, B pour la boutique, Échap pour sortir</p>
     <button id="play-button" disabled>Chargement…</button>
   </div>
 

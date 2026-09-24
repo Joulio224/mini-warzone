@@ -6,7 +6,17 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { auth } from './firebase.js';
-import { connectToServer, sendMove, sendShoot, sendCollectLoot, sendCollectVest, sendUseVest, sendCollectWeapon } from './network.js';
+import {
+  connectToServer,
+  sendMove,
+  sendShoot,
+  sendCollectLoot,
+  sendCollectVest,
+  sendUseVest,
+  sendCollectWeapon,
+  sendBuyItem,
+} from './network.js';
+import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
 
 // ---------------------------------------------------------------------------
 // Scène, caméra, rendu
@@ -185,10 +195,12 @@ const playButton = document.getElementById('play-button');
 
 // Dimensions de la salle — doivent rester cohérentes avec TEAM_SPAWN_POINTS
 // dans mini-warzone-server/server.js si tu les changes.
-const ROOM_HALF_WIDTH = 15; // étendue en X
-const ROOM_HALF_DEPTH = 10; // étendue en Z
+const ROOM_HALF_WIDTH = 20; // étendue en X
+const ROOM_HALF_DEPTH = 14; // étendue en Z
 const WALL_HEIGHT = 5;
 const WALL_THICKNESS = 0.6;
+const BALCONY_HEIGHT = 3.2;
+const BALCONY_THICKNESS = 0.3;
 
 const wallMaterial = new THREE.MeshStandardMaterial({
   map: makeSpeckledTexture({ base: [85, 91, 102], variation: 22, repeat: 5 }),
@@ -238,6 +250,21 @@ function addCoverBox(centerX, centerZ, width, depth, height) {
   );
 }
 
+// Rampe en pente : une simple boîte inclinée, ajoutée à groundObjects (donc
+// "marchable" via le même raycast vertical que le reste du sol) mais PAS à
+// collisionBoxes (qui est un test 2D en X/Z sans notion de hauteur — une
+// rampe y bloquerait tout le monde en permanence, peu importe l'altitude).
+function addRamp(centerX, zStart, width, rise, run) {
+  const slopeLength = Math.hypot(rise, run);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, 0.3, slopeLength), floorMaterial);
+  mesh.position.set(centerX, rise / 2, zStart + run / 2);
+  mesh.rotation.x = -Math.atan2(rise, run);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  groundObjects.push(mesh);
+}
+
 function buildCustomRoom() {
   // Sol (surface au niveau y = 0, pour rester cohérent avec les spawns).
   const floor = new THREE.Mesh(
@@ -258,6 +285,35 @@ function buildCustomRoom() {
   addWallMesh(0, ROOM_HALF_DEPTH, fullWidth, WALL_THICKNESS); // nord
   addWallMesh(-ROOM_HALF_WIDTH, 0, WALL_THICKNESS, fullDepth); // ouest (équipe rouge)
   addWallMesh(ROOM_HALF_WIDTH, 0, WALL_THICKNESS, fullDepth); // est (équipe bleue)
+
+  // --- Balcon (2e étage), ouvert côté sud (vue plongeante sur la salle) ---
+  const balconyDepth = 6;
+  const balconyZStart = ROOM_HALF_DEPTH - balconyDepth; // bord ouvert, côté salle
+  const balconyWidth = ROOM_HALF_WIDTH * 2 - 6; // laisse de la place aux rampes sur les bords
+  const balconyFloor = new THREE.Mesh(
+    new THREE.BoxGeometry(balconyWidth, BALCONY_THICKNESS, balconyDepth),
+    floorMaterial
+  );
+  balconyFloor.position.set(0, BALCONY_HEIGHT, balconyZStart + balconyDepth / 2);
+  balconyFloor.castShadow = true;
+  balconyFloor.receiveShadow = true;
+  scene.add(balconyFloor);
+  groundObjects.push(balconyFloor);
+
+  // Garde-corps bas sur le bord ouvert — purement visuel/décoratif, pas de
+  // collision : on veut pouvoir tirer/sauter par-dessus depuis le balcon.
+  const railGeometry = new THREE.BoxGeometry(balconyWidth, 0.7, 0.08);
+  const railMaterial = new THREE.MeshStandardMaterial({ color: 0x1c1f24, roughness: 0.5, metalness: 0.4 });
+  const rail = new THREE.Mesh(railGeometry, railMaterial);
+  rail.position.set(0, BALCONY_HEIGHT + 0.35 + BALCONY_THICKNESS / 2, balconyZStart);
+  rail.castShadow = true;
+  scene.add(rail);
+
+  // Rampes d'accès, une de chaque côté, menant du sol jusqu'au bord ouvert
+  // du balcon.
+  const rampRun = balconyZStart - 1;
+  addRamp(-(ROOM_HALF_WIDTH - 4), 1, 4, BALCONY_HEIGHT, rampRun);
+  addRamp(ROOM_HALF_WIDTH - 4, 1, 4, BALCONY_HEIGHT, rampRun);
 
   // Zones de spawn colorées au sol, purement visuelles (pas de collision),
   // pour repérer son côté d'un coup d'œil.
@@ -295,6 +351,82 @@ function buildCustomRoom() {
     { x: 2.5, z: 0, w: 1.5, d: 1.5, h: 1.6 },
   ];
   covers.forEach((c) => addCoverBox(c.x, c.z, c.w, c.d, c.h));
+
+  buildShopTable();
+}
+
+// Position de la table de la boutique — juste entre les deux caisses
+// centrales (x=±2.5,z=0), pile au milieu de la salle. Réutilisée pour le
+// test de proximité qui autorise (ou pas) l'ouverture avec B, voir plus bas.
+const SHOP_POSITION = { x: 0, z: 0 };
+const SHOP_INTERACTION_RADIUS = 2.4;
+
+function buildShopTable() {
+  const woodMaterial = new THREE.MeshStandardMaterial({ color: 0x6b4a30, roughness: 0.85 });
+  const toolMaterial = new THREE.MeshStandardMaterial({ color: 0x9aa5ad, metalness: 0.7, roughness: 0.3 });
+  const handleMaterial = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.6 });
+  const caseMaterial = new THREE.MeshStandardMaterial({ color: 0xc23616, roughness: 0.6 });
+
+  const table = new THREE.Group();
+
+  const tabletop = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.12, 1.2), woodMaterial);
+  tabletop.position.y = 0.9;
+  tabletop.castShadow = true;
+  tabletop.receiveShadow = true;
+  table.add(tabletop);
+
+  const legGeometry = new THREE.BoxGeometry(0.1, 0.9, 0.1);
+  [[-1.05, -0.45], [1.05, -0.45], [-1.05, 0.45], [1.05, 0.45]].forEach(([lx, lz]) => {
+    const leg = new THREE.Mesh(legGeometry, woodMaterial);
+    leg.position.set(lx, 0.45, lz);
+    leg.castShadow = true;
+    table.add(leg);
+  });
+
+  // Quelques outils posés dessus — juste assez de silhouette pour se lire
+  // comme un établi, dans le même esprit low-poly que le reste du décor.
+  const wrench = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.08), toolMaterial);
+  wrench.position.set(-0.6, 0.98, 0.2);
+  wrench.rotation.y = 0.4;
+  wrench.castShadow = true;
+  table.add(wrench);
+
+  const screwdriverHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.22, 8), handleMaterial);
+  screwdriverHandle.position.set(0.1, 0.98, -0.25);
+  screwdriverHandle.rotation.z = Math.PI / 2;
+  table.add(screwdriverHandle);
+  const screwdriverShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.28, 6), toolMaterial);
+  screwdriverShaft.position.set(0.36, 0.98, -0.25);
+  screwdriverShaft.rotation.z = Math.PI / 2;
+  table.add(screwdriverShaft);
+
+  const toolbox = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.22, 0.28), caseMaterial);
+  toolbox.position.set(0.7, 1.03, 0.15);
+  toolbox.castShadow = true;
+  table.add(toolbox);
+
+  const boltGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.06, 8);
+  const bolt1 = new THREE.Mesh(boltGeometry, toolMaterial);
+  bolt1.position.set(-0.2, 0.99, 0.32);
+  table.add(bolt1);
+  const bolt2 = new THREE.Mesh(boltGeometry, toolMaterial);
+  bolt2.position.set(-0.05, 0.99, 0.35);
+  table.add(bolt2);
+
+  // Petit repère lumineux au-dessus — pour repérer la boutique de loin dans
+  // la salle, comme pour les gilets/armes au sol.
+  const beacon = new THREE.PointLight(0xffd23f, 2, 6, 2);
+  beacon.position.set(0, 1.7, 0);
+  table.add(beacon);
+
+  table.position.set(SHOP_POSITION.x, 0, SHOP_POSITION.z);
+  scene.add(table);
+  collisionBoxes.push(
+    new THREE.Box3(
+      new THREE.Vector3(SHOP_POSITION.x - 1.15, 0, SHOP_POSITION.z - 0.55),
+      new THREE.Vector3(SHOP_POSITION.x + 1.15, 1.0, SHOP_POSITION.z + 0.55)
+    )
+  );
 }
 
 if (USE_DOWNLOADED_MAP) {
@@ -370,19 +502,25 @@ controls.addEventListener('lock', () => {
   menuEl.style.display = 'none';
 });
 controls.addEventListener('unlock', () => {
+  // Si c'est la boutique qui vient de déverrouiller le pointeur (touche B),
+  // on ne veut PAS afficher le menu "Cliquer pour jouer" par-dessus — voir
+  // la section "Boutique" plus bas.
+  if (isShopOpen()) return;
   menuEl.style.display = 'flex';
 });
 
 // ---------------------------------------------------------------------------
 // Armes (viewmodels en primitives, à remplacer plus tard par de vrais
-// modèles). Dégâts et cadence : doivent rester identiques à WEAPONS dans
-// mini-warzone-server/server.js, le serveur ne fait jamais confiance au
-// client pour ça. Touches 1/2/3 pour changer d'arme.
+// modèles). La cadence doit rester identique à WEAPON_BASE dans
+// mini-warzone-server/server.js — les DÉGÂTS, eux, ne sont plus fixes ici :
+// ils dépendent de la rareté équipée (gris/bleu/rouge, voir shop.js) et ne
+// sont calculés que côté serveur, seule autorité sur le sujet. Touches
+// 1/2/3 pour changer d'arme.
 // ---------------------------------------------------------------------------
 const WEAPONS = [
-  { id: 'pistol', name: 'Pistolet', damage: 18, cooldown: 0.35, autoFire: false, color: 0x2b2b2b },
-  { id: 'smg', name: 'Mitraillette', damage: 10, cooldown: 0.09, autoFire: true, color: 0x333d47 },
-  { id: 'rifle', name: 'Fusil', damage: 16, cooldown: 0.18, autoFire: true, color: 0x3a3226 },
+  { id: 'pistol', name: 'Pistolet', cooldown: 0.35, autoFire: false, color: 0x2b2b2b },
+  { id: 'smg', name: 'Mitraillette', cooldown: 0.09, autoFire: true, color: 0x333d47 },
+  { id: 'rifle', name: 'Fusil', cooldown: 0.18, autoFire: true, color: 0x3a3226 },
 ];
 // Couleurs des pickups au sol (bien plus vives que la couleur "réaliste" du
 // modèle en main ci-dessus, pour qu'on les repère facilement à distance).
@@ -400,7 +538,7 @@ function buildPistolModel(color) {
   grip.position.set(0, -0.1, 0.06);
   grip.rotation.x = 0.35;
   group.add(grip);
-  return group;
+  return { group, material: mat };
 }
 
 function buildSmgModel(color) {
@@ -422,7 +560,7 @@ function buildSmgModel(color) {
   const stock = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.06, 0.16), mat);
   stock.position.set(0, 0, 0.28);
   group.add(stock);
-  return group;
+  return { group, material: mat };
 }
 
 function buildRifleModel(color) {
@@ -444,25 +582,46 @@ function buildRifleModel(color) {
   const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.08, 0.22), mat);
   stock.position.set(0, 0.01, 0.36);
   group.add(stock);
-  return group;
+  return { group, material: mat };
 }
 
 const WEAPON_BUILDERS = { pistol: buildPistolModel, smg: buildSmgModel, rifle: buildRifleModel };
 
+// Teinte appliquée au(x) matériau(x) de l'arme en main selon sa rareté —
+// "grise/bleutée/rougie" comme demandé : gris = couleur d'origine (aucune
+// teinte), bleu/rouge mélangent 45% de la couleur de rareté (voir shop.js)
+// à la couleur de base de l'arme, avec une légère lueur assortie.
+const RARITY_TINT_MIX = 0.45;
+
 const weaponGroup = new THREE.Group();
+// Un élément par TYPE d'arme (pas par rareté) : le même modèle 3D est réutilisé
+// et simplement reteinté quand la rareté équipée change (voir applyRarityTint).
 const weaponModels = WEAPONS.map((weapon) => {
-  const model = WEAPON_BUILDERS[weapon.id](weapon.color);
+  const { group: model, material } = WEAPON_BUILDERS[weapon.id](weapon.color);
   model.visible = false;
   weaponGroup.add(model);
-  return model;
+  return { id: weapon.id, group: model, material, baseColor: new THREE.Color(weapon.color) };
 });
 
-// currentWeaponIndex reste l'index dans WEAPONS du modèle affiché (utile
-// pour weaponModels) ; currentSlot (déclaré plus haut, 0/1/2) est ce que
-// l'UI et les entrées clavier/souris utilisent pour savoir quel slot du
-// stuff est actif.
+function applyRarityTint(weaponId, rarity) {
+  const entry = weaponModels.find((w) => w.id === weaponId);
+  if (!entry) return;
+  if (!rarity || rarity === 'gray') {
+    entry.material.color.copy(entry.baseColor);
+    entry.material.emissive.set(0x000000);
+    return;
+  }
+  const tint = new THREE.Color(rarityColor(rarity));
+  entry.material.color.copy(entry.baseColor).lerp(tint, RARITY_TINT_MIX);
+  entry.material.emissive.copy(tint);
+  entry.material.emissiveIntensity = 0.3;
+}
+
+// currentWeaponIndex reste l'index dans WEAPONS/weaponModels du modèle
+// affiché ; currentSlot (déclaré plus loin, 0/1/2) est ce que l'UI et les
+// entrées clavier/souris utilisent pour savoir quel slot du stuff est actif.
 let currentWeaponIndex = 0;
-weaponModels[currentWeaponIndex].visible = true;
+weaponModels[currentWeaponIndex].group.visible = true;
 
 // Petit flash bref au canon à chaque tir — attaché à l'arme donc suit
 // automatiquement ses mouvements (recul, visée, bob).
@@ -478,6 +637,30 @@ function showMuzzleFlash() {
   }, 40);
 }
 
+// Met à jour le modèle 3D visible (et sa teinte de rareté) d'après le slot
+// actuellement sélectionné et le contenu réel de myWeapons — appelée aussi
+// bien quand on change de slot (touches 1/2/3) que quand le contenu d'un
+// slot change (ramassage au sol, achat en boutique, reset au respawn).
+function refreshEquippedWeaponDisplay() {
+  if (currentSlot === 2) {
+    weaponGroup.visible = false;
+    return;
+  }
+  const equipped = myWeapons[currentSlot];
+  if (!equipped) {
+    weaponGroup.visible = false;
+    return;
+  }
+  const newIndex = WEAPONS.findIndex((w) => w.id === equipped.id);
+  if (newIndex !== currentWeaponIndex) {
+    weaponModels[currentWeaponIndex].group.visible = false;
+    currentWeaponIndex = newIndex;
+  }
+  weaponModels[currentWeaponIndex].group.visible = true;
+  weaponGroup.visible = true;
+  applyRarityTint(equipped.id, equipped.rarity);
+}
+
 // Sélectionne un slot du stuff (0/1 = armes, 2 = gilets). Pour un slot
 // d'arme vide (pas encore ramassée) ou en pleine mort, on ignore — on ne
 // peut pas "sélectionner" une arme qu'on n'a pas.
@@ -486,18 +669,11 @@ function selectSlot(slot) {
   if (slot < 2 && !myWeapons[slot]) return; // rien dans ce slot d'arme
 
   currentSlot = slot;
-
-  if (slot === 2) {
-    weaponGroup.visible = false;
-  } else {
-    weaponModels[currentWeaponIndex].visible = false;
-    currentWeaponIndex = WEAPONS.findIndex((w) => w.id === myWeapons[slot]);
-    weaponModels[currentWeaponIndex].visible = true;
-    weaponGroup.visible = true;
-  }
+  refreshEquippedWeaponDisplay();
   updateInventoryUI();
 }
 document.addEventListener('keydown', (e) => {
+  if (isShopOpen()) return; // pas de changement d'arme "à l'aveugle" pendant qu'on regarde la boutique
   if (e.code === 'Digit1') selectSlot(0);
   if (e.code === 'Digit2') selectSlot(1);
   if (e.code === 'Digit3') selectSlot(2);
@@ -519,19 +695,30 @@ const MAX_HP = 100;
 let localHp = MAX_HP;
 let isDead = false;
 
-// Bouclier (gilets pare-balle) — doit rester identique aux valeurs
-// équivalentes dans mini-warzone-server/server.js.
+// Bouclier (gilets pare-balle) — SHIELD_PER_VEST et MAX_SHIELD_VESTS_BASE
+// doivent rester identiques aux valeurs équivalentes dans
+// mini-warzone-server/server.js. Le plafond réel (myMaxVestSlots) n'est PAS
+// une constante : il vaut 2 par défaut mais passe à 3 pour le reste de la
+// partie si la capacité spéciale "3e emplacement de gilet" est achetée en
+// boutique (voir handleAbilitiesUpdate et shop.js).
 const SHIELD_PER_VEST = 25;
-const MAX_SHIELD_VESTS = 2;
-const MAX_SHIELD = SHIELD_PER_VEST * MAX_SHIELD_VESTS;
+const MAX_SHIELD_VESTS_BASE = 2;
+let myMaxVestSlots = MAX_SHIELD_VESTS_BASE;
 let localShield = 0;
 let localMoney = 0;
 
+function currentMaxShield() {
+  return SHIELD_PER_VEST * myMaxVestSlots;
+}
+
 // "Stuff" du joueur : 2 slots d'arme (le 0 est toujours le pistolet de
-// départ, jamais perdu) + un compteur de gilets en réserve (max 2, à
-// utiliser au clic droit pour les convertir en bouclier). currentSlot vaut
-// 0/1 pour les armes, 2 pour les gilets — sélection via les touches 1/2/3.
-let myWeapons = ['pistol', null];
+// départ, jamais perdu — seule sa rareté peut changer) + un compteur de
+// gilets en réserve (max myMaxVestSlots, à utiliser au clic droit pour les
+// convertir en bouclier). Chaque slot d'arme non vide est maintenant un
+// objet { id, rarity } (et plus une simple chaîne) depuis l'introduction du
+// système de rareté — voir shop.js. currentSlot vaut 0/1 pour les armes, 2
+// pour les gilets — sélection via les touches 1/2/3.
+let myWeapons = [{ id: 'pistol', rarity: 'gray' }, null];
 let myVestCount = 0;
 let currentSlot = 0;
 
@@ -557,8 +744,9 @@ function updateHealthUI(hp) {
 updateHealthUI(localHp);
 
 function updateShieldUI(shield) {
-  localShield = Math.max(0, Math.min(MAX_SHIELD, shield));
-  if (shieldFillEl) shieldFillEl.style.width = `${(localShield / MAX_SHIELD) * 100}%`;
+  const max = currentMaxShield();
+  localShield = Math.max(0, Math.min(max, shield));
+  if (shieldFillEl) shieldFillEl.style.width = `${(localShield / max) * 100}%`;
 }
 updateShieldUI(localShield);
 
@@ -573,20 +761,32 @@ function weaponLabel(weaponId) {
   return weapon ? weapon.name : 'Vide';
 }
 
+// Renvoie l'état actuel du joueur au format attendu par shop.js
+// (renderShop/openShop) — regroupé ici pour n'avoir qu'un seul endroit à
+// mettre à jour si la boutique a besoin d'une donnée de plus un jour.
+function getShopState() {
+  return { money: localMoney, weapons: myWeapons, vestCount: myVestCount, maxVestSlots: myMaxVestSlots };
+}
+
 function updateInventoryUI() {
   const slotContents = [myWeapons[0], myWeapons[1], null];
   invSlotEls.forEach((el, index) => {
     if (!el) return;
     el.classList.toggle('active', index === currentSlot);
     const label = el.querySelector('.inv-label');
+    const dot = el.querySelector('.inv-rarity-dot');
     if (!label) return;
     if (index < 2) {
-      const weaponId = slotContents[index];
-      el.classList.toggle('empty', !weaponId);
-      label.textContent = weaponId ? weaponLabel(weaponId) : 'Vide';
+      const weapon = slotContents[index];
+      el.classList.toggle('empty', !weapon);
+      label.textContent = weapon ? weaponLabel(weapon.id) : 'Vide';
+      if (dot) {
+        dot.style.background = weapon ? rarityColor(weapon.rarity) : 'transparent';
+        dot.style.boxShadow = weapon ? `0 0 4px ${rarityColor(weapon.rarity)}` : 'none';
+      }
     } else {
       el.classList.toggle('empty', myVestCount === 0);
-      label.textContent = `Gilets x${myVestCount}`;
+      label.textContent = `Gilets x${myVestCount}/${myMaxVestSlots}`;
     }
   });
 }
@@ -594,18 +794,35 @@ updateInventoryUI();
 
 function handleWeaponsUpdate(weapons) {
   myWeapons = weapons;
+  // Reteinte les deux modèles dès que le stuff change (achat, ramassage,
+  // reset au respawn) même si le slot correspondant n'est pas affiché tout
+  // de suite — la teinte sera donc déjà bonne si on rechange de slot plus tard.
+  myWeapons.forEach((w) => { if (w) applyRarityTint(w.id, w.rarity); });
   // Si le slot actif vient de perdre son arme (ex: reset à la mort), on
   // retombe sur le pistolet plutôt que de rester bloqué sur un slot vide.
   if (currentSlot < 2 && !myWeapons[currentSlot]) {
     selectSlot(0);
   } else {
+    refreshEquippedWeaponDisplay();
     updateInventoryUI();
   }
+  if (isShopOpen()) renderShop(getShopState());
 }
 
 function handleVestCountUpdate(count) {
   myVestCount = count;
   updateInventoryUI();
+  if (isShopOpen()) renderShop(getShopState());
+}
+
+// Capacité spéciale "3e emplacement de gilet" (voir shop.js) : ne se
+// réinitialise jamais en cours de partie (contrairement aux armes/gilets),
+// donc pas besoin de la remettre à zéro à la mort/au respawn ici.
+function handleAbilitiesUpdate({ maxVestSlots } = {}) {
+  if (typeof maxVestSlots === 'number') myMaxVestSlots = maxVestSlots;
+  updateShieldUI(localShield); // le plafond du bouclier peut avoir changé
+  updateInventoryUI();
+  if (isShopOpen()) renderShop(getShopState());
 }
 
 let damageFlashTimeout = null;
@@ -616,10 +833,13 @@ function flashDamage() {
 }
 
 let hitMarkerTimeout = null;
-function showHitMarker() {
+function showHitMarker(isHeadshot) {
   crosshairEl.classList.add('hit');
+  crosshairEl.classList.toggle('headshot', Boolean(isHeadshot));
   clearTimeout(hitMarkerTimeout);
-  hitMarkerTimeout = setTimeout(() => crosshairEl.classList.remove('hit'), 150);
+  hitMarkerTimeout = setTimeout(() => {
+    crosshairEl.classList.remove('hit', 'headshot');
+  }, 150);
 }
 
 let respawnInterval = null;
@@ -632,6 +852,18 @@ function handleYouDied() {
   weaponGroup.visible = false;
   deathScreenEl.hidden = false;
   updateInventoryUI();
+
+  // Cas rare mais possible : mourir pendant qu'on regarde la boutique (le
+  // pointeur est alors déverrouillé). On ferme la boutique et on réaffiche
+  // le menu existant (bouton "Cliquer pour jouer") comme filet de
+  // sécurité pour reverrouiller le pointeur — on ne peut pas appeler
+  // controls.lock() nous-mêmes ici, ce n'est pas déclenché par un geste
+  // utilisateur direct (message reçu du serveur) et les navigateurs
+  // refusent souvent le verrouillage du pointeur hors interaction directe.
+  if (isShopOpen()) {
+    closeShop();
+    menuEl.style.display = 'flex';
+  }
 
   let secondsLeft = 3;
   respawnCountdownEl.textContent = `Réapparition dans ${secondsLeft}s…`;
@@ -648,7 +880,8 @@ function handleYouRespawned({ position }) {
   isDead = false;
   localHp = MAX_HP;
   updateHealthUI(MAX_HP);
-  myWeapons = ['pistol', null];
+  myWeapons = [{ id: 'pistol', rarity: 'gray' }, null];
+  applyRarityTint('pistol', 'gray');
   selectSlot(0);
   deathScreenEl.hidden = true;
   clearInterval(respawnInterval);
@@ -670,6 +903,7 @@ function handleShieldUpdate(shield) {
 
 function handleMoneyUpdate(money) {
   updateMoneyUI(money);
+  if (isShopOpen()) renderShop(getShopState());
 }
 
 // ---------------------------------------------------------------------------
@@ -814,10 +1048,20 @@ let verticalVelocity = 0;
 let isGrounded = true;
 
 const downRaycaster = new THREE.Raycaster();
+// On part du DERNIER sol connu (pas de la position actuelle de la caméra),
+// avec une petite marge — sinon, pendant un saut près du balcon, le rayon
+// partirait de trop haut et détecterait le balcon même pour quelqu'un qui
+// saute juste en dessous, le faisant se téléporter dessus. En se basant sur
+// le dernier sol trouvé, seul un vrai déplacement horizontal (marcher sous
+// le balcon, monter une rampe) fait changer le résultat, jamais un saut.
+let lastGroundY = 0;
+const GROUND_RAY_MARGIN = 1.2;
 function getGroundY(x, z) {
-  downRaycaster.set(new THREE.Vector3(x, 50, z), new THREE.Vector3(0, -1, 0));
+  downRaycaster.set(new THREE.Vector3(x, lastGroundY + GROUND_RAY_MARGIN, z), new THREE.Vector3(0, -1, 0));
   const hits = downRaycaster.intersectObjects(groundObjects, true);
-  return hits.length ? hits[0].point.y : 0;
+  const y = hits.length ? hits[0].point.y : 0;
+  lastGroundY = y;
+  return y;
 }
 
 // Collision horizontale simple (cercle contre boîte, résolu axe par axe pour
@@ -907,7 +1151,7 @@ document.addEventListener('mouseup', (e) => {
 // Touche T = ramasser l'objet au sol le plus proche (arme ou gilet), à
 // portée. Un seul ramassage par appui (pas de spam en la maintenant).
 document.addEventListener('keydown', (e) => {
-  if (e.code !== 'KeyT' || isDead) return;
+  if (e.code !== 'KeyT' || isDead || isShopOpen()) return;
 
   let closestId = null;
   let closestType = null;
@@ -933,6 +1177,36 @@ document.addEventListener('keydown', (e) => {
   if (!closestId) return;
   if (closestType === 'weapon') sendCollectWeapon(closestId);
   else sendCollectVest(closestId);
+});
+
+// ---------------------------------------------------------------------------
+// Boutique (voir shop.js)
+// ---------------------------------------------------------------------------
+// Magasin physique : une table posée au centre de la salle (voir
+// buildShopTable). La touche B ouvre la boutique seulement si on est à
+// portée de cette table — sinon, comme avant, elle ne fait rien à
+// l'ouverture (fermer reste possible depuis n'importe où, une fois dedans).
+initShop({
+  onBuy: (itemId) => sendBuyItem(itemId),
+  onClose: () => controls.lock(),
+});
+
+const shopPromptEl = document.getElementById('shop-prompt');
+function isNearShopTable() {
+  const dx = camera.position.x - SHOP_POSITION.x;
+  const dz = camera.position.z - SHOP_POSITION.z;
+  return Math.sqrt(dx * dx + dz * dz) <= SHOP_INTERACTION_RADIUS;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyB' || isDead || !networkStarted) return;
+  if (isShopOpen()) {
+    closeShop();
+    controls.lock(); // touche B pressée = geste utilisateur direct, le verrouillage du pointeur est autorisé
+  } else if (isNearShopTable()) {
+    controls.unlock(); // affiche le curseur pour pouvoir cliquer sur les boutons de la boutique
+    openShop(getShopState());
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1067,7 +1341,7 @@ function nearestObstacleDistance(origin, direction) {
 let lastShotAt = -Infinity;
 
 function tryShoot(now) {
-  if (isDead || currentSlot === 2) return;
+  if (isDead || currentSlot === 2 || isShopOpen()) return;
   const weapon = WEAPONS[currentWeaponIndex];
   if (now - lastShotAt < weapon.cooldown) return;
   lastShotAt = now;
@@ -1078,7 +1352,11 @@ function tryShoot(now) {
   const maxLength = Math.min(nearestObstacleDistance(origin, dir), 60);
   showShotTracer(origin, dir, maxLength);
   showMuzzleFlash();
-  sendShoot({ x: origin.x, y: origin.y, z: origin.z }, { x: dir.x, y: dir.y, z: dir.z }, weapon.id);
+  // On envoie le SLOT actif (0/1), jamais l'id d'arme ni les dégâts : le
+  // serveur retrouve lui-même l'arme + la rareté réellement équipées dans
+  // ce slot (voir server.js) — impossible de tricher en prétendant avoir
+  // une meilleure arme/rareté que celle réellement achetée.
+  sendShoot({ x: origin.x, y: origin.y, z: origin.z }, { x: dir.x, y: dir.y, z: dir.z }, currentSlot);
   recoilKick = 1; // déclenche l'animation de recul de l'arme, gérée dans animate()
 }
 
@@ -1127,7 +1405,7 @@ function startNetwork() {
     onCurrentLoot: (items) => items.forEach((item) => spawnLootMesh(item.id, item.position)),
     onLootSpawned: ({ id, position }) => spawnLootMesh(id, position),
     onLootRemoved: ({ id }) => removeLootMesh(id),
-    onHitConfirmed: showHitMarker,
+    onHitConfirmed: ({ headshot }) => showHitMarker(headshot),
     onYourShield: handleShieldUpdate,
     onPlayerShieldSteps: updatePlayerShieldSteps,
     onYourMoney: handleMoneyUpdate,
@@ -1140,6 +1418,7 @@ function startNetwork() {
     onWeaponPickupSpawned: ({ id, weaponId, position }) => spawnWeaponPickupMesh(id, weaponId, position),
     onWeaponPickupRemoved: ({ id }) => removeWeaponPickupMesh(id),
     onYourWeapons: handleWeaponsUpdate,
+    onYourAbilities: handleAbilitiesUpdate,
   });
 }
 
@@ -1167,8 +1446,8 @@ function animate() {
   direction.x = Number(move.right) - Number(move.left);
   direction.normalize();
 
-  const isMoving = !isDead && (move.forward || move.backward || move.left || move.right);
-  if (!isDead) {
+  const isMoving = !isDead && !isShopOpen() && (move.forward || move.backward || move.left || move.right);
+  if (!isDead && !isShopOpen()) {
     if (move.forward || move.backward) velocity.z -= direction.z * speed * 10 * delta;
     if (move.left || move.right) velocity.x -= direction.x * speed * 10 * delta;
 
@@ -1264,6 +1543,11 @@ function animate() {
     mesh.rotation.y += delta * 1.6;
     mesh.position.y += Math.sin(clock.elapsedTime * 3 + mesh.id) * 0.0015;
   });
+
+  // --- Prompt "B - Boutique" quand on est près de la table.
+  if (shopPromptEl) {
+    shopPromptEl.style.display = !isDead && !isShopOpen() && isNearShopTable() ? 'block' : 'none';
+  }
 
   // Autres joueurs : on lisse leur déplacement plutôt que de les téléporter
   // à chaque message reçu du serveur (ça "saccaderait" sinon).
