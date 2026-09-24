@@ -21,6 +21,7 @@ let socket = null;
 //   onYourShield, onPlayerShieldSteps, onYourMoney,
 //   onCurrentVests, onVestSpawned, onVestRemoved, onYourVestCount,
 //   onCurrentWeaponPickups, onWeaponPickupSpawned, onWeaponPickupRemoved, onYourWeapons,
+//   onYourAbilities,
 // }
 export function connectToServer(pseudo, handlers) {
   socket = io(SERVER_URL);
@@ -133,6 +134,12 @@ export function connectToServer(pseudo, handlers) {
     handlers.onYourWeapons?.(weapons);
   });
 
+  // Économie : capacités spéciales débloquées pour la partie en cours (ex.
+  // 3e emplacement de gilet) et solde d'argent à jour — voir shop.js.
+  socket.on('your-abilities', (data) => {
+    handlers.onYourAbilities?.(data);
+  });
+
   socket.on('connect_error', (error) => {
     console.error('[network] Connexion au serveur temps réel impossible :', error.message);
     handlers.onConnectError?.(error);
@@ -146,9 +153,12 @@ export function sendMove(position, rotationY) {
   socket.emit('move', { position, rotationY });
 }
 
-export function sendShoot(origin, direction, weaponId) {
+// `slot` (0 ou 1) plutôt qu'un identifiant d'arme : le serveur retrouve
+// lui-même l'arme + la rareté équipées dans cet emplacement, il ne fait
+// jamais confiance au client pour les dégâts (voir server.js).
+export function sendShoot(origin, direction, slot) {
   if (!socket?.connected) return;
-  socket.emit('shoot', { origin, direction, weaponId });
+  socket.emit('shoot', { origin, direction, slot });
 }
 
 export function sendCollectLoot(lootId) {
@@ -169,6 +179,14 @@ export function sendUseVest() {
 export function sendCollectWeapon(pickupId) {
   if (!socket?.connected) return;
   socket.emit('collect-weapon', { pickupId });
+}
+
+// Boutique : itemId vient du catalogue défini dans shop.js (ex. "vest",
+// "weapon:rifle:red", "ability-extra-vest-slot"). Le serveur reste seul
+// juge de la validité de l'achat (fonds, plafonds…).
+export function sendBuyItem(itemId) {
+  if (!socket?.connected) return;
+  socket.emit('buy-item', { itemId });
 }
 
 export function isConnected() {
