@@ -21,6 +21,11 @@ import {
   acceptGroupInvite,
   declineGroupInvite,
 } from './groups.js';
+import { initAppearancePicker } from './appearance.js';
+
+// Peut être réglé dès l'écran de lobby, avant même de rejoindre l'arène —
+// pas besoin d'être connecté, c'est stocké en local (voir appearance.js).
+initAppearancePicker();
 
 // --- Éléments DOM ------------------------------------------------------------
 const authScreen = document.getElementById('auth-screen');

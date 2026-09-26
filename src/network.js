@@ -23,11 +23,11 @@ let socket = null;
 //   onCurrentWeaponPickups, onWeaponPickupSpawned, onWeaponPickupRemoved, onYourWeapons,
 //   onYourAbilities,
 // }
-export function connectToServer(pseudo, handlers) {
+export function connectToServer(pseudo, appearance, handlers) {
   socket = io(SERVER_URL);
 
   socket.on('connect', () => {
-    socket.emit('join', pseudo);
+    socket.emit('join', { pseudo, appearance });
   });
 
   socket.on('team-assigned', (data) => {

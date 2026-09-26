@@ -16,6 +16,7 @@ import {
   sendBuyItem,
 } from './network.js';
 import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
+import { getAppearance, getEmojiTexture, sanitizeAppearance, DEFAULT_APPEARANCE } from './appearance.js';
 // Toutes les données de la map qui ne sont pas de la géométrie visuelle pure
 // (boîtes de collision, spawns d'équipe, points d'apparition des armes/gilets,
 // lumières d'ambiance) — doit rester identique à
@@ -908,23 +909,26 @@ const EYE_HEIGHT = STAND_EYE_HEIGHT; // référence utilisée pour repositionner
 
 const otherPlayers = new Map(); // socket id -> { mesh, targetPosition, targetRotationY }
 
-const TEAM_BODY_COLORS = { red: 0xe63946, blue: 0x3a86ff };
+// La couleur du corps est maintenant 100% libre (choisie par le joueur, voir
+// appearance.js) — ce n'est donc plus elle qui indique l'équipe. À la place,
+// une petite pastille colorée flotte au-dessus de la tête, toujours dans la
+// couleur de l'équipe, quel que soit le skin choisi.
+const TEAM_MARKER_COLORS = { red: 0xe63946, blue: 0x3a86ff };
 // Facteur de luminosité du corps selon le nombre de gilets portés (0 à 3) —
 // chaque gilet assombrit un peu plus, jusqu'à très sombre à 3 gilets.
 const SHIELD_DARKEN_FACTORS = [1, 0.72, 0.48, 0.28];
 
-function getTintedBodyColor(team, steps) {
-  const base = TEAM_BODY_COLORS[team] ?? TEAM_BODY_COLORS.red;
+function getTintedBodyColor(baseColor, steps) {
   const factor = SHIELD_DARKEN_FACTORS[Math.max(0, Math.min(3, steps))];
-  return new THREE.Color(base).multiplyScalar(factor);
+  return new THREE.Color(baseColor).multiplyScalar(factor);
 }
 
-function createPlayerMesh(team, steps = 0) {
+function createPlayerMesh(team, steps = 0, appearance = DEFAULT_APPEARANCE) {
   const group = new THREE.Group();
 
   const body = new THREE.Mesh(
     new THREE.CapsuleGeometry(0.35, 1.1, 4, 8),
-    new THREE.MeshStandardMaterial({ color: getTintedBodyColor(team, steps) })
+    new THREE.MeshStandardMaterial({ color: getTintedBodyColor(appearance.bodyColor, steps) })
   );
   body.position.y = 0.9;
   body.castShadow = true;
@@ -938,12 +942,37 @@ function createPlayerMesh(team, steps = 0) {
   head.castShadow = true;
   group.add(head);
 
+  // Visage : un plan texturé avec l'emoji choisi (fond transparent), collé
+  // devant la tête. Pas de vraie bibliothèque de modèles 3D d'emojis pour
+  // Three.js (vérifié) — cette technique (canvas -> texture -> plan) est ce
+  // que font même les rares packages qui existent, voir appearance.js.
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.32, 0.32),
+    new THREE.MeshBasicMaterial({ map: getEmojiTexture(appearance.face), transparent: true })
+  );
+  face.position.set(0, 1.66, -0.24);
+  face.rotation.y = Math.PI; // la face avant du plan (normale +Z) doit regarder vers -Z (l'avant du perso)
+  group.add(face);
+
+  // Pastille d'équipe — repère fixe, indépendant du skin choisi.
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.07, 8, 6),
+    new THREE.MeshStandardMaterial({
+      color: TEAM_MARKER_COLORS[team] ?? TEAM_MARKER_COLORS.red,
+      emissive: TEAM_MARKER_COLORS[team] ?? TEAM_MARKER_COLORS.red,
+      emissiveIntensity: 0.6,
+    })
+  );
+  marker.position.y = 2.02;
+  group.add(marker);
+
   return { group, bodyMaterial: body.material };
 }
 
-function addOtherPlayer({ id, position, rotationY, team, shieldSteps }) {
+function addOtherPlayer({ id, position, rotationY, team, shieldSteps, appearance }) {
   if (otherPlayers.has(id)) return;
-  const { group: mesh, bodyMaterial } = createPlayerMesh(team, shieldSteps || 0);
+  const safeAppearance = sanitizeAppearance(appearance);
+  const { group: mesh, bodyMaterial } = createPlayerMesh(team, shieldSteps || 0, safeAppearance);
   if (position) {
     mesh.position.set(position.x, position.y - EYE_HEIGHT, position.z);
   }
@@ -953,6 +982,7 @@ function addOtherPlayer({ id, position, rotationY, team, shieldSteps }) {
     mesh,
     bodyMaterial,
     team,
+    bodyColor: safeAppearance.bodyColor,
     targetPosition: mesh.position.clone(),
     targetRotationY: mesh.rotation.y,
   });
@@ -961,7 +991,7 @@ function addOtherPlayer({ id, position, rotationY, team, shieldSteps }) {
 function updatePlayerShieldSteps({ id, steps }) {
   const entry = otherPlayers.get(id);
   if (!entry) return;
-  entry.bodyMaterial.color.copy(getTintedBodyColor(entry.team, steps));
+  entry.bodyMaterial.color.copy(getTintedBodyColor(entry.bodyColor, steps));
 }
 
 function updateOtherPlayer({ id, position, rotationY }) {
@@ -1074,7 +1104,7 @@ function startNetwork() {
 
   const pseudo = auth.currentUser?.displayName || 'Joueur';
 
-  connectToServer(pseudo, {
+  connectToServer(pseudo, getAppearance(), {
     onTeamAssigned: handleTeamAssigned,
     onPlayerJoined: addOtherPlayer,
     onPlayerMoved: updateOtherPlayer,

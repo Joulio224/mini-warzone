@@ -347,6 +347,52 @@
     @media (max-width: 560px) {
       .lobby-columns { grid-template-columns: 1fr; }
     }
+    .appearance-section { margin-bottom: 20px; }
+    .appearance-row { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    .appearance-preview-body {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      transition: background 0.15s ease;
+    }
+    .appearance-preview-face { font-size: 30px; line-height: 1; }
+    .appearance-controls { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 200px; }
+    .appearance-color-label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.85rem;
+      opacity: 0.8;
+    }
+    #appearance-body-color {
+      width: 48px;
+      height: 32px;
+      padding: 2px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: transparent;
+      cursor: pointer;
+    }
+    .face-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+    .face-option {
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      font-size: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      border: 2px solid transparent;
+    }
+    .face-option.selected { border-color: #e63946; background: rgba(230, 57, 70, 0.2); }
+
     .lobby-section h2 { font-size: 1.05rem; margin: 0 0 10px; }
     .lobby-section h3 {
       font-size: 0.8rem;
@@ -542,6 +588,22 @@
           <button id="logout-button" type="button" class="link-button">Déconnexion</button>
         </div>
       </div>
+
+      <section class="lobby-section appearance-section">
+        <h2>Apparence</h2>
+        <div class="appearance-row">
+          <div id="appearance-preview-body" class="appearance-preview-body">
+            <span id="appearance-preview-face" class="appearance-preview-face"></span>
+          </div>
+          <div class="appearance-controls">
+            <label class="appearance-color-label">
+              Couleur du corps
+              <input type="color" id="appearance-body-color" />
+            </label>
+            <div id="appearance-face-grid" class="face-grid"></div>
+          </div>
+        </div>
+      </section>
 
       <div class="lobby-columns">
         <section class="lobby-section">
