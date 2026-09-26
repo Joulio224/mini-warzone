@@ -22,6 +22,7 @@ import {
   declineGroupInvite,
 } from './groups.js';
 import { initAppearancePicker } from './appearance.js';
+import { setActiveGroupId } from './game-session.js';
 
 // Peut être réglé dès l'écran de lobby, avant même de rejoindre l'arène —
 // pas besoin d'être connecté, c'est stocké en local (voir appearance.js).
@@ -365,6 +366,11 @@ function renderGroups(groups) {
 
 // --- Entrer dans la partie ---------------------------------------------------
 enterGameButton.addEventListener('click', () => {
+  // Le groupe actif sert au serveur à mettre les coéquipiers dans la même
+  // équipe et à les faire spawn ensemble (voir game-session.js et
+  // network.js). Simplification : si tu es dans plusieurs groupes, c'est le
+  // premier de la liste qui est utilisé pour cette partie.
+  setActiveGroupId(currentGroups[0]?.id || null);
   showGameScreen();
 });
 

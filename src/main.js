@@ -17,6 +17,7 @@ import {
 } from './network.js';
 import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
 import { getAppearance, getEmojiTexture, sanitizeAppearance, DEFAULT_APPEARANCE } from './appearance.js';
+import { getActiveGroupId } from './game-session.js';
 // Toutes les données de la map qui ne sont pas de la géométrie visuelle pure
 // (boîtes de collision, spawns d'équipe, points d'apparition des armes/gilets,
 // lumières d'ambiance) — doit rester identique à
@@ -1103,8 +1104,9 @@ function startNetwork() {
   networkStarted = true;
 
   const pseudo = auth.currentUser?.displayName || 'Joueur';
+  const groupId = getActiveGroupId();
 
-  connectToServer(pseudo, getAppearance(), {
+  connectToServer(pseudo, getAppearance(), groupId, {
     onTeamAssigned: handleTeamAssigned,
     onPlayerJoined: addOtherPlayer,
     onPlayerMoved: updateOtherPlayer,

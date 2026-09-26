@@ -23,11 +23,14 @@ let socket = null;
 //   onCurrentWeaponPickups, onWeaponPickupSpawned, onWeaponPickupRemoved, onYourWeapons,
 //   onYourAbilities,
 // }
-export function connectToServer(pseudo, appearance, handlers) {
+// groupId : identifiant du groupe Firestore actif (voir game-session.js), ou
+// null. Permet au serveur de mettre les membres d'un même groupe dans la
+// même équipe et de les faire spawn ensemble (voir server.js).
+export function connectToServer(pseudo, appearance, groupId, handlers) {
   socket = io(SERVER_URL);
 
   socket.on('connect', () => {
-    socket.emit('join', { pseudo, appearance });
+    socket.emit('join', { pseudo, appearance, groupId });
   });
 
   socket.on('team-assigned', (data) => {
