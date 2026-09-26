@@ -10,13 +10,18 @@ import {
   connectToServer,
   sendMove,
   sendShoot,
-  sendCollectLoot,
   sendCollectVest,
   sendUseVest,
   sendCollectWeapon,
   sendBuyItem,
 } from './network.js';
 import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
+// Toutes les données de la map qui ne sont pas de la géométrie visuelle pure
+// (boîtes de collision, spawns d'équipe, points d'apparition des armes/gilets,
+// lumières d'ambiance) — doit rester identique à
+// mini-warzone-server/map-data.json. La géométrie visible, elle, vient de
+// public/assets/map.glb (voir plus bas).
+import mapData from './map-data.json';
 
 // ---------------------------------------------------------------------------
 // Scène, caméra, rendu
@@ -78,9 +83,9 @@ renderer.toneMappingExposure = 1.05;
 document.body.appendChild(renderer.domElement);
 
 // Post-traitement : juste un bloom (lueur des éléments très clairs/émissifs
-// — loot, traceurs, flash de tir), avec un seuil assez haut pour ne pas
-// tout faire baver. OutputPass en dernier pour garder les bonnes couleurs
-// (tone mapping + espace de couleur) une fois passé par le composer.
+// — gilets/armes au sol, traceurs, flash de tir), avec un seuil assez haut
+// pour ne pas tout faire baver. OutputPass en dernier pour garder les bonnes
+// couleurs (tone mapping + espace de couleur) une fois passé par le composer.
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(
@@ -115,55 +120,6 @@ const fillLight = new THREE.DirectionalLight(0x8fb4ff, 0.35);
 fillLight.position.set(-25, 15, -15);
 scene.add(fillLight);
 
-// ---------------------------------------------------------------------------
-// Textures procédurales (dessinées sur un <canvas>, sans fichier externe) —
-// un bruit tacheté pour le béton (sol/murs), des veines pour le bois (caisses).
-// ---------------------------------------------------------------------------
-function makeSpeckledTexture({ base, variation, size = 128, repeat = 8 }) {
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = `rgb(${base[0]}, ${base[1]}, ${base[2]})`;
-  ctx.fillRect(0, 0, size, size);
-  for (let i = 0; i < size * size * 0.12; i++) {
-    const shade = (Math.random() - 0.5) * variation;
-    const r = Math.max(0, Math.min(255, base[0] + shade));
-    const g = Math.max(0, Math.min(255, base[1] + shade));
-    const b = Math.max(0, Math.min(255, base[2] + shade));
-    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.55)`;
-    ctx.fillRect(Math.random() * size, Math.random() * size, 1.5, 1.5);
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(repeat, repeat);
-  return texture;
-}
-
-function makeWoodTexture({ base = [138, 109, 59], size = 128, repeat = 1 }) {
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = `rgb(${base[0]}, ${base[1]}, ${base[2]})`;
-  ctx.fillRect(0, 0, size, size);
-  for (let y = 0; y < size; y += 4 + Math.random() * 3) {
-    const shade = (Math.random() - 0.5) * 30;
-    ctx.strokeStyle = `rgba(${base[0] + shade}, ${base[1] + shade}, ${base[2] + shade}, 0.5)`;
-    ctx.lineWidth = 1 + Math.random();
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(size, y + (Math.random() - 0.5) * 6);
-    ctx.stroke();
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(repeat, repeat);
-  return texture;
-}
-
 // Sol de secours tant que la map n'est pas chargée (évite de tomber dans le vide)
 const fallbackGround = new THREE.Mesh(
   new THREE.PlaneGeometry(200, 200),
@@ -175,7 +131,7 @@ scene.add(fallbackGround);
 
 // Objets sur lesquels on teste le sol (raycast vers le bas) — séparé de
 // scene.children pour ne pas taper les autres joueurs, les traceurs de tir,
-// le loot au sol, ou l'arme (enfant de la caméra, jamais concernée).
+// ou l'arme (enfant de la caméra, jamais concernée).
 const groundObjects = [fallbackGround];
 
 // Boîtes de collision horizontale (murs, caisses de couverture) — un
@@ -183,308 +139,83 @@ const groundObjects = [fallbackGround];
 const collisionBoxes = [];
 
 // ---------------------------------------------------------------------------
-// Map : soit la vraie map téléchargée (map.glb), soit une petite salle
-// construite à la main (sol + murs + caisses pour se planquer), avec des
-// zones de spawn par équipe (rouge à l'ouest, bleue à l'est). Repasse
-// USE_DOWNLOADED_MAP à true pour revenir à la vraie map plus tard.
+// Map : chargée depuis un fichier .glb (public/assets/map.glb) — plus aucune
+// géométrie de salle codée en dur ici. Tout ce que le rendu 3D ne peut pas
+// déduire tout seul (boîtes de collision, spawns d'équipe, points
+// d'apparition des armes/gilets, lumières d'ambiance) vient de mapData
+// (voir l'import en haut du fichier).
 // ---------------------------------------------------------------------------
-const USE_DOWNLOADED_MAP = false;
-
 const loadingEl = document.getElementById('loading');
 const playButton = document.getElementById('play-button');
 
-// Dimensions de la salle — doivent rester cohérentes avec TEAM_SPAWN_POINTS
-// dans mini-warzone-server/server.js si tu les changes.
-const ROOM_HALF_WIDTH = 20; // étendue en X
-const ROOM_HALF_DEPTH = 14; // étendue en Z
-const WALL_HEIGHT = 5;
-const WALL_THICKNESS = 0.6;
-const BALCONY_HEIGHT = 3.2;
-const BALCONY_THICKNESS = 0.3;
-
-const wallMaterial = new THREE.MeshStandardMaterial({
-  map: makeSpeckledTexture({ base: [85, 91, 102], variation: 22, repeat: 5 }),
-  roughness: 0.85,
-  metalness: 0.05,
-});
-const floorMaterial = new THREE.MeshStandardMaterial({
-  map: makeSpeckledTexture({ base: [58, 58, 58], variation: 26, repeat: 12 }),
-  roughness: 0.9,
-  metalness: 0.05,
-});
-const coverMaterial = new THREE.MeshStandardMaterial({
-  map: makeWoodTexture({ base: [138, 109, 59] }),
-  roughness: 0.75,
-  metalness: 0.05,
-});
-const teamZoneMaterials = {
-  red: new THREE.MeshStandardMaterial({ color: 0x7a1f1f }),
-  blue: new THREE.MeshStandardMaterial({ color: 0x1f3f7a }),
-};
-
-function addWallMesh(centerX, centerZ, width, depth) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, WALL_HEIGHT, depth), wallMaterial);
-  mesh.position.set(centerX, WALL_HEIGHT / 2, centerZ);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  scene.add(mesh);
-  collisionBoxes.push(
-    new THREE.Box3(
-      new THREE.Vector3(centerX - width / 2, 0, centerZ - depth / 2),
-      new THREE.Vector3(centerX + width / 2, WALL_HEIGHT, centerZ + depth / 2)
-    )
-  );
-}
-
-function addCoverBox(centerX, centerZ, width, depth, height) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), coverMaterial);
-  mesh.position.set(centerX, height / 2, centerZ);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  scene.add(mesh);
-  collisionBoxes.push(
-    new THREE.Box3(
-      new THREE.Vector3(centerX - width / 2, 0, centerZ - depth / 2),
-      new THREE.Vector3(centerX + width / 2, height, centerZ + depth / 2)
-    )
-  );
-}
-
-// Rampe en pente : une simple boîte inclinée, ajoutée à groundObjects (donc
-// "marchable" via le même raycast vertical que le reste du sol) mais PAS à
-// collisionBoxes (qui est un test 2D en X/Z sans notion de hauteur — une
-// rampe y bloquerait tout le monde en permanence, peu importe l'altitude).
-function addRamp(centerX, zStart, width, rise, run) {
-  const slopeLength = Math.hypot(rise, run);
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, 0.3, slopeLength), floorMaterial);
-  mesh.position.set(centerX, rise / 2, zStart + run / 2);
-  mesh.rotation.x = -Math.atan2(rise, run);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  scene.add(mesh);
-  groundObjects.push(mesh);
-}
-
-function buildCustomRoom() {
-  // Sol (surface au niveau y = 0, pour rester cohérent avec les spawns).
-  const floor = new THREE.Mesh(
-    new THREE.BoxGeometry(ROOM_HALF_WIDTH * 2, 0.2, ROOM_HALF_DEPTH * 2),
-    floorMaterial
-  );
-  floor.position.set(0, -0.1, 0);
-  floor.receiveShadow = true;
-  scene.add(floor);
-  scene.remove(fallbackGround);
-  groundObjects.length = 0;
-  groundObjects.push(floor);
-
-  // Les 4 murs, avec un peu de recouvrement aux coins.
-  const fullWidth = ROOM_HALF_WIDTH * 2 + WALL_THICKNESS * 2;
-  const fullDepth = ROOM_HALF_DEPTH * 2;
-  addWallMesh(0, -ROOM_HALF_DEPTH, fullWidth, WALL_THICKNESS); // sud
-  addWallMesh(0, ROOM_HALF_DEPTH, fullWidth, WALL_THICKNESS); // nord
-  addWallMesh(-ROOM_HALF_WIDTH, 0, WALL_THICKNESS, fullDepth); // ouest (équipe rouge)
-  addWallMesh(ROOM_HALF_WIDTH, 0, WALL_THICKNESS, fullDepth); // est (équipe bleue)
-
-  // --- Balcon (2e étage), ouvert côté sud (vue plongeante sur la salle) ---
-  const balconyDepth = 6;
-  const balconyZStart = ROOM_HALF_DEPTH - balconyDepth; // bord ouvert, côté salle
-  const balconyWidth = ROOM_HALF_WIDTH * 2 - 6; // laisse de la place aux rampes sur les bords
-  const balconyFloor = new THREE.Mesh(
-    new THREE.BoxGeometry(balconyWidth, BALCONY_THICKNESS, balconyDepth),
-    floorMaterial
-  );
-  balconyFloor.position.set(0, BALCONY_HEIGHT, balconyZStart + balconyDepth / 2);
-  balconyFloor.castShadow = true;
-  balconyFloor.receiveShadow = true;
-  scene.add(balconyFloor);
-  groundObjects.push(balconyFloor);
-
-  // Garde-corps bas sur le bord ouvert — purement visuel/décoratif, pas de
-  // collision : on veut pouvoir tirer/sauter par-dessus depuis le balcon.
-  const railGeometry = new THREE.BoxGeometry(balconyWidth, 0.7, 0.08);
-  const railMaterial = new THREE.MeshStandardMaterial({ color: 0x1c1f24, roughness: 0.5, metalness: 0.4 });
-  const rail = new THREE.Mesh(railGeometry, railMaterial);
-  rail.position.set(0, BALCONY_HEIGHT + 0.35 + BALCONY_THICKNESS / 2, balconyZStart);
-  rail.castShadow = true;
-  scene.add(rail);
-
-  // Rampes d'accès, une de chaque côté, menant du sol jusqu'au bord ouvert
-  // du balcon.
-  const rampRun = balconyZStart - 1;
-  addRamp(-(ROOM_HALF_WIDTH - 4), 1, 4, BALCONY_HEIGHT, rampRun);
-  addRamp(ROOM_HALF_WIDTH - 4, 1, 4, BALCONY_HEIGHT, rampRun);
-
-  // Zones de spawn colorées au sol, purement visuelles (pas de collision),
-  // pour repérer son côté d'un coup d'œil.
-  const zoneGeometry = new THREE.PlaneGeometry(4, ROOM_HALF_DEPTH * 2 - 1);
-  const redZone = new THREE.Mesh(zoneGeometry, teamZoneMaterials.red);
-  redZone.rotation.x = -Math.PI / 2;
-  redZone.position.set(-ROOM_HALF_WIDTH + 2.5, 0.01, 0);
-  scene.add(redZone);
-
-  const blueZone = new THREE.Mesh(zoneGeometry, teamZoneMaterials.blue);
-  blueZone.rotation.x = -Math.PI / 2;
-  blueZone.position.set(ROOM_HALF_WIDTH - 2.5, 0.01, 0);
-  scene.add(blueZone);
-
-  // Lumières d'ambiance colorées près de chaque zone de spawn — renforce
-  // l'identité de chaque équipe, et donne du grain au bloom.
-  const redAccentLight = new THREE.PointLight(0xff4d4d, 6, 12, 2);
-  redAccentLight.position.set(-ROOM_HALF_WIDTH + 2, 3, 0);
-  scene.add(redAccentLight);
-
-  const blueAccentLight = new THREE.PointLight(0x4d94ff, 6, 12, 2);
-  blueAccentLight.position.set(ROOM_HALF_WIDTH - 2, 3, 0);
-  scene.add(blueAccentLight);
-
-  // Caisses de couverture au centre, pour se planquer sans bloquer
-  // complètement la vue d'un bout à l'autre de la salle.
-  const covers = [
-    { x: -6, z: -4, w: 2, d: 2, h: 1.6 },
-    { x: -6, z: 4, w: 2, d: 2, h: 1.6 },
-    { x: 0, z: -6, w: 3, d: 1.2, h: 1.6 },
-    { x: 0, z: 6, w: 3, d: 1.2, h: 1.6 },
-    { x: 6, z: -4, w: 2, d: 2, h: 1.6 },
-    { x: 6, z: 4, w: 2, d: 2, h: 1.6 },
-    { x: -2.5, z: 0, w: 1.5, d: 1.5, h: 1.6 },
-    { x: 2.5, z: 0, w: 1.5, d: 1.5, h: 1.6 },
-  ];
-  covers.forEach((c) => addCoverBox(c.x, c.z, c.w, c.d, c.h));
-
-  buildShopTable();
-}
-
-// Position de la table de la boutique — juste entre les deux caisses
-// centrales (x=±2.5,z=0), pile au milieu de la salle. Réutilisée pour le
-// test de proximité qui autorise (ou pas) l'ouverture avec B, voir plus bas.
-const SHOP_POSITION = { x: 0, z: 0 };
-const SHOP_INTERACTION_RADIUS = 2.4;
-
-function buildShopTable() {
-  const woodMaterial = new THREE.MeshStandardMaterial({ color: 0x6b4a30, roughness: 0.85 });
-  const toolMaterial = new THREE.MeshStandardMaterial({ color: 0x9aa5ad, metalness: 0.7, roughness: 0.3 });
-  const handleMaterial = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.6 });
-  const caseMaterial = new THREE.MeshStandardMaterial({ color: 0xc23616, roughness: 0.6 });
-
-  const table = new THREE.Group();
-
-  const tabletop = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.12, 1.2), woodMaterial);
-  tabletop.position.y = 0.9;
-  tabletop.castShadow = true;
-  tabletop.receiveShadow = true;
-  table.add(tabletop);
-
-  const legGeometry = new THREE.BoxGeometry(0.1, 0.9, 0.1);
-  [[-1.05, -0.45], [1.05, -0.45], [-1.05, 0.45], [1.05, 0.45]].forEach(([lx, lz]) => {
-    const leg = new THREE.Mesh(legGeometry, woodMaterial);
-    leg.position.set(lx, 0.45, lz);
-    leg.castShadow = true;
-    table.add(leg);
-  });
-
-  // Quelques outils posés dessus — juste assez de silhouette pour se lire
-  // comme un établi, dans le même esprit low-poly que le reste du décor.
-  const wrench = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.08), toolMaterial);
-  wrench.position.set(-0.6, 0.98, 0.2);
-  wrench.rotation.y = 0.4;
-  wrench.castShadow = true;
-  table.add(wrench);
-
-  const screwdriverHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.22, 8), handleMaterial);
-  screwdriverHandle.position.set(0.1, 0.98, -0.25);
-  screwdriverHandle.rotation.z = Math.PI / 2;
-  table.add(screwdriverHandle);
-  const screwdriverShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.28, 6), toolMaterial);
-  screwdriverShaft.position.set(0.36, 0.98, -0.25);
-  screwdriverShaft.rotation.z = Math.PI / 2;
-  table.add(screwdriverShaft);
-
-  const toolbox = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.22, 0.28), caseMaterial);
-  toolbox.position.set(0.7, 1.03, 0.15);
-  toolbox.castShadow = true;
-  table.add(toolbox);
-
-  const boltGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.06, 8);
-  const bolt1 = new THREE.Mesh(boltGeometry, toolMaterial);
-  bolt1.position.set(-0.2, 0.99, 0.32);
-  table.add(bolt1);
-  const bolt2 = new THREE.Mesh(boltGeometry, toolMaterial);
-  bolt2.position.set(-0.05, 0.99, 0.35);
-  table.add(bolt2);
-
-  // Petit repère lumineux au-dessus — pour repérer la boutique de loin dans
-  // la salle, comme pour les gilets/armes au sol.
-  const beacon = new THREE.PointLight(0xffd23f, 2, 6, 2);
-  beacon.position.set(0, 1.7, 0);
-  table.add(beacon);
-
-  table.position.set(SHOP_POSITION.x, 0, SHOP_POSITION.z);
-  scene.add(table);
-  collisionBoxes.push(
-    new THREE.Box3(
-      new THREE.Vector3(SHOP_POSITION.x - 1.15, 0, SHOP_POSITION.z - 0.55),
-      new THREE.Vector3(SHOP_POSITION.x + 1.15, 1.0, SHOP_POSITION.z + 0.55)
-    )
-  );
-}
-
-if (USE_DOWNLOADED_MAP) {
-  const loader = new GLTFLoader();
-  loader.load(
-    '/assets/map.glb',
-    (gltf) => {
-      gltf.scene.traverse((child) => {
-        if (child.isMesh) {
-          child.castShadow = true;
-          child.receiveShadow = true;
-
-          // La texture de la Low Poly Arena est un petit atlas pixelisé —
-          // le filtrage "linéaire" par défaut de Three.js la flouterait.
-          // On force un filtrage au plus proche pour garder le style net,
-          // comme recommandé dans les instructions d'install de l'asset.
-          const material = child.material;
-          const maps = [material?.map, material?.emissiveMap, material?.roughnessMap];
-          maps.forEach((map) => {
-            if (!map) return;
-            map.magFilter = THREE.NearestFilter;
-            map.minFilter = THREE.NearestFilter;
-            map.needsUpdate = true;
-          });
-        }
-      });
-      scene.add(gltf.scene);
-      scene.remove(fallbackGround);
-
-      // La map devient le sol pour les collisions verticales (saut/gravité) ;
-      // le sol de secours ne sert plus.
-      groundObjects.length = 0;
-      groundObjects.push(gltf.scene);
-
-      loadingEl.style.display = 'none';
-      playButton.disabled = false;
-      playButton.textContent = 'Cliquer pour jouer';
-    },
-    (progress) => {
-      if (progress.total) {
-        const pct = Math.round((progress.loaded / progress.total) * 100);
-        loadingEl.textContent = `Chargement de la map… ${pct}%`;
+const mapLoader = new GLTFLoader();
+mapLoader.load(
+  '/assets/map.glb',
+  (gltf) => {
+    gltf.scene.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
       }
-    },
-    (error) => {
-      console.error('Erreur de chargement de la map :', error);
-      loadingEl.textContent =
-        "Map introuvable — dépose ton fichier .glb dans public/assets/map.glb (sol de secours actif)";
-      playButton.disabled = false;
-      playButton.textContent = 'Cliquer pour jouer (sans map)';
+    });
+    scene.add(gltf.scene);
+    scene.remove(fallbackGround);
+
+    // Sol pour les collisions verticales (saut/gravité, marche sur le
+    // balcon/les rampes) : on ne raycaste QUE les meshes "marchables" (sol,
+    // rampes — repérés par leur nom), pas toute la map (murs, garde-corps,
+    // décor...) à chaque frame. Sur une map simple ça ne change rien, mais
+    // ça évite un vrai ralentissement le jour où ta map Fusion 360 sera
+    // beaucoup plus détaillée que ce placeholder en boîtes. Nomme tes
+    // surfaces marchables avec "floor" ou "ramp" quelque part dans leur nom
+    // (dans Fusion 360/Blender) pour que ça continue à marcher ; si aucun
+    // mesh ne correspond, on retombe sur la map entière (comportement
+    // d'avant, plus lent mais jamais cassé).
+    const walkableMeshes = [];
+    gltf.scene.traverse((child) => {
+      if (child.isMesh && /floor|ramp/i.test(child.name)) walkableMeshes.push(child);
+    });
+    groundObjects.length = 0;
+    groundObjects.push(...(walkableMeshes.length ? walkableMeshes : [gltf.scene]));
+
+    // Boîtes de collision horizontale (murs, caisses), voir mapData.colliders.
+    // Le type "floor" (sol du balcon) ne sert que côté serveur (blocage des
+    // tirs à hauteur du balcon) — côté client on marche dessus via le
+    // raycast ci-dessus, il ne faut surtout pas le traiter comme un mur.
+    mapData.colliders
+      .filter((c) => c.type === 'wall')
+      .forEach((c) => {
+        collisionBoxes.push(
+          new THREE.Box3(new THREE.Vector3(c.minX, c.minY, c.minZ), new THREE.Vector3(c.maxX, c.maxY, c.maxZ))
+        );
+      });
+
+    // Lumières d'ambiance (voir mapData.lights) — purement décoratives,
+    // aucune incidence sur le gameplay.
+    (mapData.lights || []).forEach((l) => {
+      const light = new THREE.PointLight(l.color, l.intensity, l.distance, l.decay);
+      light.position.set(l.x, l.y, l.z);
+      scene.add(light);
+    });
+
+    loadingEl.style.display = 'none';
+    playButton.disabled = false;
+    playButton.textContent = 'Cliquer pour jouer';
+  },
+  (progress) => {
+    if (progress.total) {
+      const pct = Math.round((progress.loaded / progress.total) * 100);
+      loadingEl.textContent = `Chargement de la map… ${pct}%`;
     }
-  );
-} else {
-  buildCustomRoom();
-  loadingEl.style.display = 'none';
-  playButton.disabled = false;
-  playButton.textContent = 'Cliquer pour jouer';
-}
+  },
+  (error) => {
+    console.error('Erreur de chargement de la map :', error);
+    loadingEl.textContent =
+      "Map introuvable — dépose ton fichier .glb dans public/assets/map.glb (sol de secours actif)";
+    playButton.disabled = false;
+    playButton.textContent = 'Cliquer pour jouer (sans map)';
+  }
+);
 
 // ---------------------------------------------------------------------------
 // Contrôles FPS (pointer lock)
@@ -493,10 +224,19 @@ const controls = new PointerLockControls(camera, renderer.domElement);
 scene.add(controls.getObject());
 
 const menuEl = document.getElementById('menu');
+const quitButton = document.getElementById('quit-button');
 
 playButton.addEventListener('click', () => {
   controls.lock();
   startNetwork();
+});
+// Quitter revient simplement au lobby via un rechargement de page : ça
+// coupe la connexion au serveur et repart sur un état propre, plutôt que de
+// démonter à la main toute la scène 3D, les joueurs adverses, le HUD, etc.
+quitButton.addEventListener('click', () => {
+  if (window.confirm('Quitter la partie et revenir au lobby ?')) {
+    window.location.reload();
+  }
 });
 controls.addEventListener('lock', () => {
   menuEl.style.display = 'none';
@@ -833,13 +573,10 @@ function flashDamage() {
 }
 
 let hitMarkerTimeout = null;
-function showHitMarker(isHeadshot) {
+function showHitMarker() {
   crosshairEl.classList.add('hit');
-  crosshairEl.classList.toggle('headshot', Boolean(isHeadshot));
   clearTimeout(hitMarkerTimeout);
-  hitMarkerTimeout = setTimeout(() => {
-    crosshairEl.classList.remove('hit', 'headshot');
-  }, 150);
+  hitMarkerTimeout = setTimeout(() => crosshairEl.classList.remove('hit'), 150);
 }
 
 let respawnInterval = null;
@@ -907,50 +644,8 @@ function handleMoneyUpdate(money) {
 }
 
 // ---------------------------------------------------------------------------
-// Loot au sol (déposé par les joueurs éliminés) — des cubes, à ramasser pour
-// regagner de la vie (HP).
-// ---------------------------------------------------------------------------
-const lootMeshes = new Map(); // lootId -> mesh
-const nearbyLootRequested = new Set(); // évite de spammer collect-loot chaque frame
-const LOOT_COLLECT_RADIUS_CLIENT = 2.0;
-
-function createLootMesh() {
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(0.45, 0.45, 0.45),
-    new THREE.MeshStandardMaterial({
-      color: 0xffd23f,
-      emissive: 0xffaa00,
-      emissiveIntensity: 1.2,
-      metalness: 0.3,
-      roughness: 0.4,
-    })
-  );
-  mesh.castShadow = true;
-  const glow = new THREE.PointLight(0xffaa00, 1.5, 4, 2);
-  mesh.add(glow);
-  return mesh;
-}
-
-function spawnLootMesh(id, position) {
-  if (lootMeshes.has(id)) return;
-  const mesh = createLootMesh();
-  mesh.position.set(position.x, position.y, position.z);
-  scene.add(mesh);
-  lootMeshes.set(id, mesh);
-}
-
-function removeLootMesh(id) {
-  const mesh = lootMeshes.get(id);
-  if (!mesh) return;
-  scene.remove(mesh);
-  lootMeshes.delete(id);
-  nearbyLootRequested.delete(id);
-}
-
-// ---------------------------------------------------------------------------
 // Gilets pare-balle au sol — réapparaissent à des points fixes après un
-// délai (contrairement au loot, qui ne tombe que des joueurs tués). Ramassés,
-// ils remplissent le bouclier par paliers de SHIELD_PER_VEST.
+// délai. Ramassés, ils remplissent le bouclier par paliers de SHIELD_PER_VEST.
 // ---------------------------------------------------------------------------
 const vestMeshes = new Map(); // vestId -> mesh
 const VEST_COLLECT_RADIUS_CLIENT = 2.0;
@@ -1182,28 +877,25 @@ document.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 // Boutique (voir shop.js)
 // ---------------------------------------------------------------------------
-// Magasin physique : une table posée au centre de la salle (voir
-// buildShopTable). La touche B ouvre la boutique seulement si on est à
-// portée de cette table — sinon, comme avant, elle ne fait rien à
-// l'ouverture (fermer reste possible depuis n'importe où, une fois dedans).
+// PLACEHOLDER TEMPORAIRE : pas encore de magasin physique dans la salle 3D,
+// donc on ouvre/ferme la boutique avec la touche B en attendant. Le jour où
+// tu places un point d'interaction "magasin" (une position dans map-data.json,
+// ou un objet nommé dans le .glb repéré via gltf.scene.getObjectByName), il
+// suffira de remplacer ce raccourci par un appel à openShop()/closeShop()
+// depuis cette interaction de proximité (comme pour le ramassage au sol
+// ci-dessus) — tout le reste (catalogue, achats, UI, sécurité serveur) est
+// déjà prêt et n'a pas besoin de changer.
 initShop({
   onBuy: (itemId) => sendBuyItem(itemId),
   onClose: () => controls.lock(),
 });
-
-const shopPromptEl = document.getElementById('shop-prompt');
-function isNearShopTable() {
-  const dx = camera.position.x - SHOP_POSITION.x;
-  const dz = camera.position.z - SHOP_POSITION.z;
-  return Math.sqrt(dx * dx + dz * dz) <= SHOP_INTERACTION_RADIUS;
-}
 
 document.addEventListener('keydown', (e) => {
   if (e.code !== 'KeyB' || isDead || !networkStarted) return;
   if (isShopOpen()) {
     closeShop();
     controls.lock(); // touche B pressée = geste utilisateur direct, le verrouillage du pointeur est autorisé
-  } else if (isNearShopTable()) {
+  } else {
     controls.unlock(); // affiche le curseur pour pouvoir cliquer sur les boutons de la boutique
     openShop(getShopState());
   }
@@ -1402,10 +1094,7 @@ function startNetwork() {
       setOtherPlayerVisible(id, true);
       snapOtherPlayer(id, position);
     },
-    onCurrentLoot: (items) => items.forEach((item) => spawnLootMesh(item.id, item.position)),
-    onLootSpawned: ({ id, position }) => spawnLootMesh(id, position),
-    onLootRemoved: ({ id }) => removeLootMesh(id),
-    onHitConfirmed: ({ headshot }) => showHitMarker(headshot),
+    onHitConfirmed: showHitMarker,
     onYourShield: handleShieldUpdate,
     onPlayerShieldSteps: updatePlayerShieldSteps,
     onYourMoney: handleMoneyUpdate,
@@ -1514,23 +1203,6 @@ function animate() {
   weaponGroup.rotation.x = -recoilKick * 0.35;
   weaponGroup.position.z += recoilKick * 0.06;
 
-  // --- Loot au sol : petite rotation/flottement, et ramassage par proximité
-  lootMeshes.forEach((mesh, id) => {
-    mesh.rotation.y += delta * 1.6;
-    mesh.position.y += Math.sin(clock.elapsedTime * 3 + mesh.id) * 0.0015;
-
-    if (isDead) return;
-    const dx = camera.position.x - mesh.position.x;
-    const dz = camera.position.z - mesh.position.z;
-    const distance = Math.sqrt(dx * dx + dz * dz);
-    if (distance <= LOOT_COLLECT_RADIUS_CLIENT && !nearbyLootRequested.has(id)) {
-      nearbyLootRequested.add(id);
-      sendCollectLoot(id);
-    } else if (distance > LOOT_COLLECT_RADIUS_CLIENT) {
-      nearbyLootRequested.delete(id);
-    }
-  });
-
   // --- Gilets pare-balle au sol : juste l'animation (flottement/rotation).
   // Le ramassage se fait maintenant à la touche T, plus automatiquement.
   vestMeshes.forEach((mesh) => {
@@ -1543,11 +1215,6 @@ function animate() {
     mesh.rotation.y += delta * 1.6;
     mesh.position.y += Math.sin(clock.elapsedTime * 3 + mesh.id) * 0.0015;
   });
-
-  // --- Prompt "B - Boutique" quand on est près de la table.
-  if (shopPromptEl) {
-    shopPromptEl.style.display = !isDead && !isShopOpen() && isNearShopTable() ? 'block' : 'none';
-  }
 
   // Autres joueurs : on lisse leur déplacement plutôt que de les téléporter
   // à chaque message reçu du serveur (ça "saccaderait" sinon).

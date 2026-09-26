@@ -55,24 +55,6 @@
       padding: 6px 10px;
       border-radius: 4px;
     }
-    #shop-prompt {
-      position: fixed;
-      top: calc(50% + 40px);
-      left: 50%;
-      transform: translateX(-50%);
-      display: none;
-      color: white;
-      font-family: system-ui, sans-serif;
-      font-size: 0.9rem;
-      font-weight: 600;
-      background: rgba(0, 0, 0, 0.55);
-      border: 1px solid rgba(255, 210, 63, 0.5);
-      padding: 6px 14px;
-      border-radius: 6px;
-      z-index: 6;
-      pointer-events: none;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-    }
     #crosshair {
       position: fixed;
       top: 50%;
@@ -90,10 +72,6 @@
     #crosshair.hit {
       transform: scale(2.4);
       background: #ffb400;
-    }
-    #crosshair.headshot {
-      transform: scale(3.2);
-      background: #ff3b3b;
     }
 
     /* --- HUD : vie, dégâts, écran de mort ------------------------------- */
@@ -483,7 +461,6 @@
 </head>
 <body>
   <div id="loading">Chargement de la map…</div>
-  <div id="shop-prompt">B — Ouvrir la boutique</div>
   <div id="crosshair"></div>
   <div id="damage-flash"></div>
 
@@ -605,6 +582,7 @@
     <h1>Mini Warzone</h1>
     <p>ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, 1/2/3 pour changer d'arme, T pour ramasser, B pour la boutique, Échap pour sortir</p>
     <button id="play-button" disabled>Chargement…</button>
+    <button id="quit-button" class="secondary" type="button">Quitter la partie</button>
   </div>
 
   <script type="module" src="/src/main.js"></script>

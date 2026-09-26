@@ -17,7 +17,7 @@ let socket = null;
 // handlers = {
 //   onPlayerJoined, onPlayerMoved, onPlayerShoot, onPlayerLeft, onConnectError,
 //   onHpUpdate, onYouDied, onPlayerDied, onYouRespawned, onPlayerRespawned,
-//   onCurrentLoot, onLootSpawned, onLootRemoved, onHitConfirmed, onTeamAssigned,
+//   onHitConfirmed, onTeamAssigned,
 //   onYourShield, onPlayerShieldSteps, onYourMoney,
 //   onCurrentVests, onVestSpawned, onVestRemoved, onYourVestCount,
 //   onCurrentWeaponPickups, onWeaponPickupSpawned, onWeaponPickupRemoved, onYourWeapons,
@@ -72,18 +72,6 @@ export function connectToServer(pseudo, handlers) {
 
   socket.on('player-respawned', (data) => {
     handlers.onPlayerRespawned?.(data);
-  });
-
-  socket.on('current-loot', (items) => {
-    handlers.onCurrentLoot?.(items);
-  });
-
-  socket.on('loot-spawned', (data) => {
-    handlers.onLootSpawned?.(data);
-  });
-
-  socket.on('loot-removed', (data) => {
-    handlers.onLootRemoved?.(data);
   });
 
   socket.on('hit-confirmed', (data) => {
@@ -159,11 +147,6 @@ export function sendMove(position, rotationY) {
 export function sendShoot(origin, direction, slot) {
   if (!socket?.connected) return;
   socket.emit('shoot', { origin, direction, slot });
-}
-
-export function sendCollectLoot(lootId) {
-  if (!socket?.connected) return;
-  socket.emit('collect-loot', { lootId });
 }
 
 export function sendCollectVest(vestId) {
