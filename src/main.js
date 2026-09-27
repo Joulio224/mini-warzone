@@ -468,13 +468,9 @@ function showMuzzleFlash() {
 
 // Met à jour le modèle 3D visible (et sa teinte de rareté) d'après le slot
 // actuellement sélectionné et le contenu réel de myWeapons — appelée aussi
-// bien quand on change de slot (touches 1/2/3) que quand le contenu d'un
+// bien quand on change de slot (touches 1/2) que quand le contenu d'un
 // slot change (ramassage au sol, achat en boutique, reset au respawn).
 function refreshEquippedWeaponDisplay() {
-  if (currentSlot === 2) {
-    weaponGroup.visible = false;
-    return;
-  }
   const equipped = myWeapons[currentSlot];
   if (!equipped) {
     weaponGroup.visible = false;
@@ -490,12 +486,12 @@ function refreshEquippedWeaponDisplay() {
   applyRarityTint(equipped.id, equipped.rarity);
 }
 
-// Sélectionne un slot du stuff (0/1 = armes, 2 = gilets). Pour un slot
-// d'arme vide (pas encore ramassée) ou en pleine mort, on ignore — on ne
-// peut pas "sélectionner" une arme qu'on n'a pas.
+// Sélectionne un slot d'arme (0 ou 1). Pour un slot vide (pas encore
+// ramassé) ou en pleine mort, on ignore — on ne peut pas "sélectionner" une
+// arme qu'on n'a pas.
 function selectSlot(slot) {
-  if (isDead || slot < 0 || slot > 2) return;
-  if (slot < 2 && !myWeapons[slot]) return; // rien dans ce slot d'arme
+  if (isDead || slot < 0 || slot > 1) return;
+  if (!myWeapons[slot]) return; // rien dans ce slot
 
   currentSlot = slot;
   refreshEquippedWeaponDisplay();
@@ -505,7 +501,6 @@ document.addEventListener('keydown', (e) => {
   if (isShopOpen()) return; // pas de changement d'arme "à l'aveugle" pendant qu'on regarde la boutique
   if (e.code === 'Digit1') selectSlot(0);
   if (e.code === 'Digit2') selectSlot(1);
-  if (e.code === 'Digit3') selectSlot(2);
 });
 
 const WEAPON_REST_POSITION = new THREE.Vector3(0.28, -0.25, -0.55);
@@ -541,12 +536,14 @@ function currentMaxShield() {
 }
 
 // "Stuff" du joueur : 2 slots d'arme (le 0 est toujours le pistolet de
-// départ, jamais perdu — seule sa rareté peut changer) + un compteur de
-// gilets en réserve (max myMaxVestSlots, à utiliser au clic droit pour les
+// départ au premier spawn, mais peut être remplacé par un ramassage au sol
+// une fois le stuff plein — voir plus bas) + un compteur de gilets en
+// réserve (max myMaxVestSlots, à utiliser avec la touche P pour les
 // convertir en bouclier). Chaque slot d'arme non vide est maintenant un
 // objet { id, rarity } (et plus une simple chaîne) depuis l'introduction du
-// système de rareté — voir shop.js. currentSlot vaut 0/1 pour les armes, 2
-// pour les gilets — sélection via les touches 1/2/3.
+// système de rareté — voir shop.js. currentSlot vaut 0 ou 1 (armes
+// uniquement) — sélection via les touches 1/2 ; les gilets n'ont plus de
+// slot dédié, voir la touche P plus bas.
 let myWeapons = [{ id: 'pistol', rarity: 'gray' }, null];
 let myVestCount = 0;
 let currentSlot = 0;
@@ -562,8 +559,8 @@ const crosshairEl = document.getElementById('crosshair');
 const invSlotEls = [
   document.getElementById('slot-weapon1'),
   document.getElementById('slot-weapon2'),
-  document.getElementById('slot-vest'),
 ];
+const vestStockEl = document.getElementById('vest-stock');
 
 function updateHealthUI(hp) {
   const clamped = Math.max(0, Math.min(MAX_HP, hp));
@@ -598,26 +595,40 @@ function getShopState() {
 }
 
 function updateInventoryUI() {
-  const slotContents = [myWeapons[0], myWeapons[1], null];
   invSlotEls.forEach((el, index) => {
     if (!el) return;
     el.classList.toggle('active', index === currentSlot);
     const label = el.querySelector('.inv-label');
     const dot = el.querySelector('.inv-rarity-dot');
     if (!label) return;
-    if (index < 2) {
-      const weapon = slotContents[index];
-      el.classList.toggle('empty', !weapon);
-      label.textContent = weapon ? weaponLabel(weapon.id) : 'Vide';
-      if (dot) {
-        dot.style.background = weapon ? rarityColor(weapon.rarity) : 'transparent';
-        dot.style.boxShadow = weapon ? `0 0 4px ${rarityColor(weapon.rarity)}` : 'none';
-      }
-    } else {
-      el.classList.toggle('empty', myVestCount === 0);
-      label.textContent = `Gilets x${myVestCount}/${myMaxVestSlots}`;
+    const weapon = myWeapons[index];
+    el.classList.toggle('empty', !weapon);
+    label.textContent = weapon ? weaponLabel(weapon.id) : 'Vide';
+    if (dot) {
+      dot.style.background = weapon ? rarityColor(weapon.rarity) : 'transparent';
+      dot.style.boxShadow = weapon ? `0 0 4px ${rarityColor(weapon.rarity)}` : 'none';
     }
   });
+  updateVestStockUI();
+}
+
+// Rangée de petits carrés sous le stuff (voir #vest-stock dans index.html) :
+// un carré par emplacement de gilet (myMaxVestSlots, 2 ou 3 selon la
+// capacité achetée), grisé par défaut et rempli pour chaque gilet
+// effectivement en réserve — le stock visible d'un coup d'œil, sans chiffre.
+function updateVestStockUI() {
+  if (!vestStockEl) return;
+  const pips = Array.from(vestStockEl.children);
+  while (pips.length < myMaxVestSlots) {
+    const pip = document.createElement('div');
+    pip.className = 'vest-pip';
+    vestStockEl.appendChild(pip);
+    pips.push(pip);
+  }
+  while (pips.length > myMaxVestSlots) {
+    vestStockEl.removeChild(pips.pop());
+  }
+  pips.forEach((pip, index) => pip.classList.toggle('filled', index < myVestCount));
 }
 updateInventoryUI();
 
@@ -629,7 +640,7 @@ function handleWeaponsUpdate(weapons) {
   myWeapons.forEach((w) => { if (w) applyRarityTint(w.id, w.rarity); });
   // Si le slot actif vient de perdre son arme (ex: reset à la mort), on
   // retombe sur le pistolet plutôt que de rester bloqué sur un slot vide.
-  if (currentSlot < 2 && !myWeapons[currentSlot]) {
+  if (!myWeapons[currentSlot]) {
     selectSlot(0);
   } else {
     refreshEquippedWeaponDisplay();
@@ -906,9 +917,10 @@ function onKeyChange(e, isDown) {
 document.addEventListener('keydown', (e) => onKeyChange(e, true));
 document.addEventListener('keyup', (e) => onKeyChange(e, false));
 
-// Clic droit maintenu = viser (slot arme) — zoom + arme recentrée +
-// déplacement ralenti. Clic droit sur le slot gilets = consomme un gilet en
-// réserve pour regagner du bouclier (action unique, pas un maintien).
+// Clic droit maintenu = viser (zoom + arme recentrée + déplacement ralenti).
+// Touche P = consomme un gilet en réserve pour regagner du bouclier (action
+// unique, pas un maintien) — plus besoin de sélectionner un slot dédié au
+// préalable, voir la touche 3 disparue plus haut.
 // Clic gauche = tir. Maintenu, ça ne re-tire en continu que pour les armes
 // automatiques (WEAPONS[].autoFire) — géré dans animate().
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -916,11 +928,7 @@ let isMouseDown = false;
 document.addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== renderer.domElement) return;
   if (e.button === 2) {
-    if (currentSlot === 2) {
-      if (myVestCount > 0) sendUseVest();
-    } else {
-      isAiming = true;
-    }
+    isAiming = true;
   }
   if (e.button === 0) {
     isMouseDown = true;
@@ -930,6 +938,11 @@ document.addEventListener('mousedown', (e) => {
 document.addEventListener('mouseup', (e) => {
   if (e.button === 2) isAiming = false;
   if (e.button === 0) isMouseDown = false;
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyP' || isDead || isShopOpen()) return;
+  if (myVestCount > 0) sendUseVest();
 });
 
 // Touche T = ramasser l'objet au sol le plus proche (arme ou gilet), à
@@ -959,7 +972,7 @@ document.addEventListener('keydown', (e) => {
   });
 
   if (!closestId) return;
-  if (closestType === 'weapon') sendCollectWeapon(closestId);
+  if (closestType === 'weapon') sendCollectWeapon(closestId, currentSlot);
   else sendCollectVest(closestId);
 });
 
@@ -1149,7 +1162,7 @@ function nearestObstacleDistance(origin, direction) {
 let lastShotAt = -Infinity;
 
 function tryShoot(now) {
-  if (isDead || currentSlot === 2 || isShopOpen()) return;
+  if (isDead || isShopOpen()) return;
   const weapon = WEAPONS[currentWeaponIndex];
   if (now - lastShotAt < weapon.cooldown) return;
   lastShotAt = now;

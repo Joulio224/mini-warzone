@@ -162,9 +162,12 @@ export function sendUseVest() {
   socket.emit('use-vest');
 }
 
-export function sendCollectWeapon(pickupId) {
+// `slot` (0 ou 1) : slot actuellement sélectionné, utilisé par le serveur
+// seulement si le stuff est déjà plein (voir server.js) pour savoir lequel
+// remplacer.
+export function sendCollectWeapon(pickupId, slot) {
   if (!socket?.connected) return;
-  socket.emit('collect-weapon', { pickupId });
+  socket.emit('collect-weapon', { pickupId, slot });
 }
 
 // Boutique : itemId vient du catalogue défini dans shop.js (ex. "vest",

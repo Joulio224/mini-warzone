@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { db } from './firebase.js';
 
 // ---------------------------------------------------------------------------
 // Personnalisation du skin — couleur du corps (libre) + visage (un emoji au
@@ -45,6 +47,28 @@ export function setAppearance(partial) {
   return merged;
 }
 
+// ---------------------------------------------------------------------------
+// Profil Firestore — l'apparence n'est utile aux AUTRES joueurs (ex. voir le
+// skin de ses coéquipiers dans le lobby, avant même de rejoindre la partie)
+// que si elle est aussi stockée côté serveur, pas juste en local. On
+// réutilise le doc users/{uid} déjà utilisé par friends.js pour la recherche
+// par pseudo — mêmes règles Firestore (lecture ouverte aux comptes connectés,
+// écriture réservée au propriétaire), pas de changement de règles nécessaire.
+// ---------------------------------------------------------------------------
+export async function saveAppearanceToProfile(uid, appearance) {
+  if (!uid) return;
+  await setDoc(doc(db, 'users', uid), { appearance: sanitizeAppearance(appearance) }, { merge: true });
+}
+
+// callback(appearance) — appelé immédiatement puis à chaque changement côté
+// Firestore (ex. ce membre du groupe modifie son skin pendant que tu es dans
+// le lobby). Renvoie une fonction pour se désabonner.
+export function listenUserAppearance(uid, callback) {
+  return onSnapshot(doc(db, 'users', uid), (snap) => {
+    callback(sanitizeAppearance(snap.data()?.appearance));
+  });
+}
+
 // Cache par emoji : évite de redessiner/recréer une texture pour chaque
 // joueur qui partage le même visage (souvent plusieurs, vu le choix limité).
 const textureCache = new Map();
@@ -75,7 +99,9 @@ export function getEmojiTexture(emoji) {
 // ---------------------------------------------------------------------------
 // UI du sélecteur (branchée dans le lobby, voir index.html + lobby.js)
 // ---------------------------------------------------------------------------
-export function initAppearancePicker() {
+// onChange(appearance) est optionnel — lobby.js s'en sert pour synchroniser
+// le choix vers Firestore (voir saveAppearanceToProfile) dès qu'il change.
+export function initAppearancePicker({ onChange } = {}) {
   const colorInput = document.getElementById('appearance-body-color');
   const faceGrid = document.getElementById('appearance-face-grid');
   const previewFace = document.getElementById('appearance-preview-face');
@@ -102,12 +128,15 @@ export function initAppearancePicker() {
       faceGrid.querySelectorAll('.face-option').forEach((el) => el.classList.remove('selected'));
       button.classList.add('selected');
       renderPreview(updated);
+      onChange?.(updated);
     });
     faceGrid.appendChild(button);
   });
 
   colorInput.addEventListener('input', () => {
-    renderPreview(setAppearance({ bodyColor: colorInput.value }));
+    const updated = setAppearance({ bodyColor: colorInput.value });
+    renderPreview(updated);
+    onChange?.(updated);
   });
 
   renderPreview(current);

@@ -21,12 +21,8 @@ import {
   acceptGroupInvite,
   declineGroupInvite,
 } from './groups.js';
-import { initAppearancePicker } from './appearance.js';
+import { initAppearancePicker, getAppearance, saveAppearanceToProfile, listenUserAppearance, DEFAULT_APPEARANCE } from './appearance.js';
 import { setActiveGroupId } from './game-session.js';
-
-// Peut être réglé dès l'écran de lobby, avant même de rejoindre l'arène —
-// pas besoin d'être connecté, c'est stocké en local (voir appearance.js).
-initAppearancePicker();
 
 // --- Éléments DOM ------------------------------------------------------------
 const authScreen = document.getElementById('auth-screen');
@@ -64,9 +60,26 @@ let currentFriends = [];
 let currentGroups = [];
 let unsubscribers = [];
 
+// Skin des AUTRES joueurs (membres de groupe), lu en direct depuis Firestore
+// — voir ensureAppearanceSubscriptions plus bas. uid -> appearance / unsub.
+const appearanceByUid = new Map();
+const appearanceSubs = new Map();
+
+// Peut être réglé dès l'écran de lobby, avant même de rejoindre l'arène —
+// stocké en local ET synchronisé vers Firestore si connecté (voir
+// appearance.js), pour que les coéquipiers voient ton skin dans le lobby.
+initAppearancePicker({
+  onChange: (appearance) => {
+    if (currentUser) saveAppearanceToProfile(currentUser.uid, appearance);
+  },
+});
+
 function clearSubscriptions() {
   unsubscribers.forEach((unsub) => unsub());
   unsubscribers = [];
+  appearanceSubs.forEach((unsub) => unsub());
+  appearanceSubs.clear();
+  appearanceByUid.clear();
 }
 
 function showAuthScreen() {
@@ -287,9 +300,61 @@ function renderIncomingGroupInvites(invites) {
   });
 }
 
+// S'abonne en direct à l'apparence de chaque uid utile (membres de tous tes
+// groupes), et se désabonne de ceux qui ne le sont plus. `onUpdate` est
+// rappelé à chaque fois qu'une de ces apparences change (ou arrive pour la
+// première fois), pour redessiner les groupes avec la donnée à jour.
+function ensureAppearanceSubscriptions(groups, onUpdate) {
+  const neededUids = new Set(groups.flatMap((g) => g.members));
+
+  appearanceSubs.forEach((unsub, uid) => {
+    if (!neededUids.has(uid)) {
+      unsub();
+      appearanceSubs.delete(uid);
+      appearanceByUid.delete(uid);
+    }
+  });
+
+  neededUids.forEach((uid) => {
+    if (appearanceSubs.has(uid)) return;
+    appearanceSubs.set(
+      uid,
+      listenUserAppearance(uid, (appearance) => {
+        appearanceByUid.set(uid, appearance);
+        onUpdate();
+      })
+    );
+  });
+}
+
+function buildMemberCard(uid, pseudo) {
+  const appearance = appearanceByUid.get(uid) || DEFAULT_APPEARANCE;
+
+  const card = document.createElement('div');
+  card.className = 'member-card';
+
+  const avatar = document.createElement('div');
+  avatar.className = 'member-avatar';
+  avatar.style.background = appearance.bodyColor;
+  const face = document.createElement('span');
+  face.className = 'member-face';
+  face.textContent = appearance.face;
+  avatar.appendChild(face);
+  card.appendChild(avatar);
+
+  const name = document.createElement('div');
+  name.className = 'member-name';
+  name.textContent = pseudo || '?';
+  card.appendChild(name);
+
+  return card;
+}
+
 function renderGroups(groups) {
   if (!currentUser) return;
   currentGroups = groups;
+  ensureAppearanceSubscriptions(groups, () => renderGroups(currentGroups));
+
   groupsList.innerHTML = '';
   if (groups.length === 0) {
     groupsList.appendChild(emptyItem('Pas encore de groupe.'));
@@ -301,16 +366,17 @@ function renderGroups(groups) {
 
     const title = document.createElement('div');
     title.className = 'group-title';
-    const memberCount = group.members.length;
-    title.textContent = `${group.name} (${memberCount} membre${memberCount > 1 ? 's' : ''})`;
+    title.textContent = group.name;
     li.appendChild(title);
 
-    const memberNames = document.createElement('div');
-    memberNames.className = 'muted';
-    memberNames.textContent = group.members
-      .map((uid) => group.memberPseudos[uid] || '?')
-      .join(', ');
-    li.appendChild(memberNames);
+    // Les joueurs du groupe, directement — avatar (skin choisi) + pseudo en
+    // dessous, plutôt qu'une liste de noms à plat.
+    const membersRow = document.createElement('div');
+    membersRow.className = 'group-members-row';
+    group.members.forEach((uid) => {
+      membersRow.appendChild(buildMemberCard(uid, group.memberPseudos[uid]));
+    });
+    li.appendChild(membersRow);
 
     const actions = document.createElement('div');
     actions.className = 'group-actions';
@@ -386,6 +452,11 @@ onAuthChange((user) => {
 
   lobbyPseudoEl.textContent = user.displayName || user.email;
   showLobbyScreen();
+
+  // S'assure que le profil Firestore reflète bien le skin actuel dès la
+  // connexion (utile si le compte existait avant l'ajout de cette fonction,
+  // ou si le choix a été fait sur cet appareil avant de se connecter).
+  saveAppearanceToProfile(user.uid, getAppearance());
 
   unsubscribers.push(listenIncomingRequests(user.uid, renderIncomingRequests));
   unsubscribers.push(listenFriends(user.uid, renderFriends));
