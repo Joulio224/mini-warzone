@@ -140,6 +140,91 @@ const groundObjects = [fallbackGround];
 // THREE.Box3 par obstacle. Vérifiées séparément du sol (vertical).
 const collisionBoxes = [];
 
+// Position de la table de la boutique — juste entre les deux caisses
+// centrales de la salle (x=±2.5, z=0 dans mapData.colliders), pile au
+// milieu de la salle. Réutilisée pour le test de proximité qui autorise (ou
+// pas) l'ouverture avec B, voir plus bas (section "Boutique").
+const SHOP_POSITION = { x: 0, z: 0 };
+const SHOP_INTERACTION_RADIUS = 2.4;
+
+// Table de la boutique — un établi bas-poly (plateau + pieds + quelques
+// outils) posé directement dans la scène, indépendamment de la map .glb
+// chargée plus bas : elle s'ajoute par-dessus, comme les gilets/armes au
+// sol. Sa hitbox est ajoutée à collisionBoxes comme n'importe quel obstacle.
+function buildShopTable() {
+  const woodMaterial = new THREE.MeshStandardMaterial({ color: 0x6b4a30, roughness: 0.85 });
+  const toolMaterial = new THREE.MeshStandardMaterial({ color: 0x9aa5ad, metalness: 0.7, roughness: 0.3 });
+  const handleMaterial = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.6 });
+  const caseMaterial = new THREE.MeshStandardMaterial({ color: 0xc23616, roughness: 0.6 });
+
+  const table = new THREE.Group();
+
+  const tabletop = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.12, 1.2), woodMaterial);
+  tabletop.position.y = 0.9;
+  tabletop.castShadow = true;
+  tabletop.receiveShadow = true;
+  table.add(tabletop);
+
+  const legGeometry = new THREE.BoxGeometry(0.1, 0.9, 0.1);
+  [[-1.05, -0.45], [1.05, -0.45], [-1.05, 0.45], [1.05, 0.45]].forEach(([lx, lz]) => {
+    const leg = new THREE.Mesh(legGeometry, woodMaterial);
+    leg.position.set(lx, 0.45, lz);
+    leg.castShadow = true;
+    table.add(leg);
+  });
+
+  // Quelques outils posés dessus — juste assez de silhouette pour se lire
+  // comme un établi, dans le même esprit low-poly que le reste du décor.
+  const wrench = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.08), toolMaterial);
+  wrench.position.set(-0.6, 0.98, 0.2);
+  wrench.rotation.y = 0.4;
+  wrench.castShadow = true;
+  table.add(wrench);
+
+  const screwdriverHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.22, 8), handleMaterial);
+  screwdriverHandle.position.set(0.1, 0.98, -0.25);
+  screwdriverHandle.rotation.z = Math.PI / 2;
+  table.add(screwdriverHandle);
+  const screwdriverShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.28, 6), toolMaterial);
+  screwdriverShaft.position.set(0.36, 0.98, -0.25);
+  screwdriverShaft.rotation.z = Math.PI / 2;
+  table.add(screwdriverShaft);
+
+  const toolbox = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.22, 0.28), caseMaterial);
+  toolbox.position.set(0.7, 1.03, 0.15);
+  toolbox.castShadow = true;
+  table.add(toolbox);
+
+  const boltGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.06, 8);
+  const bolt1 = new THREE.Mesh(boltGeometry, toolMaterial);
+  bolt1.position.set(-0.2, 0.99, 0.32);
+  table.add(bolt1);
+  const bolt2 = new THREE.Mesh(boltGeometry, toolMaterial);
+  bolt2.position.set(-0.05, 0.99, 0.35);
+  table.add(bolt2);
+
+  // Petit repère lumineux au-dessus — pour repérer la boutique de loin dans
+  // la salle, comme pour les gilets/armes au sol.
+  const beacon = new THREE.PointLight(0xffd23f, 2, 6, 2);
+  beacon.position.set(0, 1.7, 0);
+  table.add(beacon);
+
+  table.position.set(SHOP_POSITION.x, 0, SHOP_POSITION.z);
+  scene.add(table);
+  collisionBoxes.push(
+    new THREE.Box3(
+      new THREE.Vector3(SHOP_POSITION.x - 1.15, 0, SHOP_POSITION.z - 0.55),
+      new THREE.Vector3(SHOP_POSITION.x + 1.15, 1.0, SHOP_POSITION.z + 0.55)
+    )
+  );
+}
+
+function isNearShopTable() {
+  const dx = camera.position.x - SHOP_POSITION.x;
+  const dz = camera.position.z - SHOP_POSITION.z;
+  return Math.sqrt(dx * dx + dz * dz) <= SHOP_INTERACTION_RADIUS;
+}
+
 // ---------------------------------------------------------------------------
 // Map : chargée depuis un fichier .glb (public/assets/map.glb) — plus aucune
 // géométrie de salle codée en dur ici. Tout ce que le rendu 3D ne peut pas
@@ -199,6 +284,8 @@ mapLoader.load(
       light.position.set(l.x, l.y, l.z);
       scene.add(light);
     });
+
+    buildShopTable();
 
     loadingEl.style.display = 'none';
     playButton.disabled = false;
@@ -879,25 +966,23 @@ document.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 // Boutique (voir shop.js)
 // ---------------------------------------------------------------------------
-// PLACEHOLDER TEMPORAIRE : pas encore de magasin physique dans la salle 3D,
-// donc on ouvre/ferme la boutique avec la touche B en attendant. Le jour où
-// tu places un point d'interaction "magasin" (une position dans map-data.json,
-// ou un objet nommé dans le .glb repéré via gltf.scene.getObjectByName), il
-// suffira de remplacer ce raccourci par un appel à openShop()/closeShop()
-// depuis cette interaction de proximité (comme pour le ramassage au sol
-// ci-dessus) — tout le reste (catalogue, achats, UI, sécurité serveur) est
-// déjà prêt et n'a pas besoin de changer.
+// Magasin physique : une table posée au centre de la salle (voir
+// buildShopTable). La touche B ouvre la boutique seulement si on est à
+// portée de cette table — sinon, comme avant, elle ne fait rien à
+// l'ouverture (fermer reste possible depuis n'importe où, une fois dedans).
 initShop({
   onBuy: (itemId) => sendBuyItem(itemId),
   onClose: () => controls.lock(),
 });
+
+const shopPromptEl = document.getElementById('shop-prompt');
 
 document.addEventListener('keydown', (e) => {
   if (e.code !== 'KeyB' || isDead || !networkStarted) return;
   if (isShopOpen()) {
     closeShop();
     controls.lock(); // touche B pressée = geste utilisateur direct, le verrouillage du pointeur est autorisé
-  } else {
+  } else if (isNearShopTable()) {
     controls.unlock(); // affiche le curseur pour pouvoir cliquer sur les boutons de la boutique
     openShop(getShopState());
   }
@@ -1265,6 +1350,12 @@ function animate() {
       const facing = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
       sendMove({ x: camera.position.x, y: camera.position.y, z: camera.position.z }, facing.y);
     }
+  }
+
+  // --- Prompt "B — Ouvrir la boutique" : visible seulement à portée de la
+  // table, mort exclu, et pas pendant que la boutique est déjà ouverte.
+  if (shopPromptEl) {
+    shopPromptEl.style.display = !isDead && !isShopOpen() && isNearShopTable() ? 'block' : 'none';
   }
 
   composer.render();

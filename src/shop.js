@@ -7,12 +7,10 @@
 // juge de ce qui est réellement débité/accordé — tout ce qui est calculé ici
 // (dégâts, prix) sert uniquement à l'affichage.
 //
-// Pas encore de magasin physique dans la salle 3D : l'écran s'ouvre pour
-// l'instant avec la touche B (voir main.js, section "Boutique"). Le jour où
-// un point d'interaction est posé dans buildCustomRoom(), il suffira
-// d'appeler openShop()/closeShop() depuis cette interaction de proximité à
-// la place de la touche B — tout le reste (catalogue, achats, UI) est déjà
-// prêt.
+// La boutique s'ouvre avec la touche B, mais seulement à proximité de la
+// table posée au centre de la salle (voir buildShopTable/SHOP_POSITION dans
+// main.js, section "Boutique") — ce module-ci n'a pas besoin de le savoir,
+// il expose juste openShop()/closeShop()/isShopOpen() à qui les appelle.
 
 // 3 paliers de rareté, du plus faible au plus fort. `color` sert à la fois
 // à la pastille de rareté dans l'inventaire (voir main.js) et à la teinte
