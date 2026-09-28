@@ -1,6 +1,4 @@
 import * as THREE from 'three';
-import { doc, setDoc, onSnapshot } from 'firebase/firestore';
-import { db } from './firebase.js';
 
 // ---------------------------------------------------------------------------
 // Personnalisation du skin — couleur du corps (libre) + visage (un emoji au
@@ -47,28 +45,6 @@ export function setAppearance(partial) {
   return merged;
 }
 
-// ---------------------------------------------------------------------------
-// Profil Firestore — l'apparence n'est utile aux AUTRES joueurs (ex. voir le
-// skin de ses coéquipiers dans le lobby, avant même de rejoindre la partie)
-// que si elle est aussi stockée côté serveur, pas juste en local. On
-// réutilise le doc users/{uid} déjà utilisé par friends.js pour la recherche
-// par pseudo — mêmes règles Firestore (lecture ouverte aux comptes connectés,
-// écriture réservée au propriétaire), pas de changement de règles nécessaire.
-// ---------------------------------------------------------------------------
-export async function saveAppearanceToProfile(uid, appearance) {
-  if (!uid) return;
-  await setDoc(doc(db, 'users', uid), { appearance: sanitizeAppearance(appearance) }, { merge: true });
-}
-
-// callback(appearance) — appelé immédiatement puis à chaque changement côté
-// Firestore (ex. ce membre du groupe modifie son skin pendant que tu es dans
-// le lobby). Renvoie une fonction pour se désabonner.
-export function listenUserAppearance(uid, callback) {
-  return onSnapshot(doc(db, 'users', uid), (snap) => {
-    callback(sanitizeAppearance(snap.data()?.appearance));
-  });
-}
-
 // Cache par emoji : évite de redessiner/recréer une texture pour chaque
 // joueur qui partage le même visage (souvent plusieurs, vu le choix limité).
 const textureCache = new Map();
@@ -97,22 +73,57 @@ export function getEmojiTexture(emoji) {
 }
 
 // ---------------------------------------------------------------------------
+// Perso en HTML/CSS pour le lobby (voir .character dans index.html) — même
+// silhouette qu'en jeu (createPlayerMesh dans main.js) : capsule de la couleur
+// choisie + tête couleur chair + emoji. Passe toujours par sanitizeAppearance,
+// donc même une apparence lue chez un autre joueur reste sûre à afficher.
+// ---------------------------------------------------------------------------
+export function createCharacterElement(appearance) {
+  const el = document.createElement('div');
+  el.className = 'character';
+
+  const head = document.createElement('div');
+  head.className = 'character-head';
+  const face = document.createElement('span');
+  face.className = 'character-face';
+  head.appendChild(face);
+
+  const body = document.createElement('div');
+  body.className = 'character-body';
+
+  el.append(head, body);
+  applyCharacterAppearance(el, appearance);
+  return el;
+}
+
+export function applyCharacterAppearance(el, appearance) {
+  const safe = sanitizeAppearance(appearance);
+  el.querySelector('.character-body').style.background = safe.bodyColor;
+  el.querySelector('.character-face').textContent = safe.face;
+}
+
+// ---------------------------------------------------------------------------
 // UI du sélecteur (branchée dans le lobby, voir index.html + lobby.js)
 // ---------------------------------------------------------------------------
-// onChange(appearance) est optionnel — lobby.js s'en sert pour synchroniser
-// le choix vers Firestore (voir saveAppearanceToProfile) dès qu'il change.
+// onChange(appearance) est appelé à chaque modification (lobby.js s'en sert
+// pour republier le skin et rafraîchir l'accueil).
 export function initAppearancePicker({ onChange } = {}) {
   const colorInput = document.getElementById('appearance-body-color');
   const faceGrid = document.getElementById('appearance-face-grid');
-  const previewFace = document.getElementById('appearance-preview-face');
-  const previewBody = document.getElementById('appearance-preview-body');
+  const previewSlot = document.getElementById('appearance-preview');
   if (!colorInput || !faceGrid) return; // markup absent (ex. tests) : on n'échoue pas silencieusement pour autant
 
   const current = getAppearance();
 
+  let previewCharacter = null;
+  if (previewSlot) {
+    previewSlot.innerHTML = '';
+    previewCharacter = createCharacterElement(current);
+    previewSlot.appendChild(previewCharacter);
+  }
+
   function renderPreview(appearance) {
-    if (previewBody) previewBody.style.background = appearance.bodyColor;
-    if (previewFace) previewFace.textContent = appearance.face;
+    if (previewCharacter) applyCharacterAppearance(previewCharacter, appearance);
   }
 
   colorInput.value = current.bodyColor;
@@ -128,7 +139,7 @@ export function initAppearancePicker({ onChange } = {}) {
       faceGrid.querySelectorAll('.face-option').forEach((el) => el.classList.remove('selected'));
       button.classList.add('selected');
       renderPreview(updated);
-      onChange?.(updated);
+      if (onChange) onChange(updated);
     });
     faceGrid.appendChild(button);
   });
@@ -136,7 +147,7 @@ export function initAppearancePicker({ onChange } = {}) {
   colorInput.addEventListener('input', () => {
     const updated = setAppearance({ bodyColor: colorInput.value });
     renderPreview(updated);
-    onChange?.(updated);
+    if (onChange) onChange(updated);
   });
 
   renderPreview(current);

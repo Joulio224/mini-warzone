@@ -1,6 +1,11 @@
 // ---------------------------------------------------------------------------
-// Orchestration de l'écran de connexion + lobby (amis/groupes) avant de jouer
+// Orchestration de l'écran de connexion + lobby avant de jouer
 // ---------------------------------------------------------------------------
+// Le lobby est organisé en catégories (colonne grisée à gauche) :
+//   Accueil    — ton perso (ou celui de tout ton groupe) + gros bouton Jouer
+//   Amis       — recherche/demandes/liste d'amis + création et gestion des groupes
+//   Apparence  — choix du skin
+//   Compte     — pseudo, email, déconnexion
 import { onAuthChange, signUp, signIn, signOutUser, friendlyAuthError } from './auth.js';
 import {
   searchUserByPseudo,
@@ -21,7 +26,13 @@ import {
   acceptGroupInvite,
   declineGroupInvite,
 } from './groups.js';
-import { initAppearancePicker, getAppearance, saveAppearanceToProfile, listenUserAppearance, DEFAULT_APPEARANCE } from './appearance.js';
+import {
+  initAppearancePicker,
+  getAppearance,
+  createCharacterElement,
+  DEFAULT_APPEARANCE,
+} from './appearance.js';
+import { saveMyAppearance, listenUserAppearance } from './profiles.js';
 import { setActiveGroupId } from './game-session.js';
 
 // --- Éléments DOM ------------------------------------------------------------
@@ -35,9 +46,12 @@ const loginForm = document.getElementById('login-form');
 const signupForm = document.getElementById('signup-form');
 const authError = document.getElementById('auth-error');
 
-const lobbyPseudoEl = document.getElementById('lobby-pseudo');
-const logoutButton = document.getElementById('logout-button');
+const navItems = Array.from(document.querySelectorAll('.lobby-nav-item'));
+const friendsBadge = document.getElementById('friends-badge');
 const lobbyError = document.getElementById('lobby-error');
+
+const homePartyEl = document.getElementById('home-party');
+const enterGameButton = document.getElementById('enter-game-button');
 
 const friendSearchForm = document.getElementById('friend-search-form');
 const friendSearchInput = document.getElementById('friend-search-input');
@@ -50,36 +64,53 @@ const groupNameInput = document.getElementById('group-name-input');
 const groupsList = document.getElementById('groups-list');
 const groupInvitesList = document.getElementById('group-invites-list');
 
-const enterGameButton = document.getElementById('enter-game-button');
+const lobbyPseudoEl = document.getElementById('lobby-pseudo');
+const lobbyEmailEl = document.getElementById('lobby-email');
+const logoutButton = document.getElementById('logout-button');
 
 // Le menu du jeu (main.js) ne doit apparaître qu'une fois le lobby validé.
 menuEl.style.display = 'none';
 
+// --- État --------------------------------------------------------------------
 let currentUser = null;
 let currentFriends = [];
 let currentGroups = [];
 let unsubscribers = [];
 
-// Skin des AUTRES joueurs (membres de groupe), lu en direct depuis Firestore
-// — voir ensureAppearanceSubscriptions plus bas. uid -> appearance / unsub.
-const appearanceByUid = new Map();
-const appearanceSubs = new Map();
+let pendingFriendRequestCount = 0;
+let pendingGroupInviteCount = 0;
 
-// Peut être réglé dès l'écran de lobby, avant même de rejoindre l'arène —
-// stocké en local ET synchronisé vers Firestore si connecté (voir
-// appearance.js), pour que les coéquipiers voient ton skin dans le lobby.
+// Skins des autres membres du groupe actif (uid -> apparence), alimentés par
+// un abonnement à leur profil public — voir profiles.js. Le tien vient
+// directement du stockage local (getAppearance), inutile de passer par le réseau.
+const memberAppearanceUnsubs = new Map();
+const memberAppearances = new Map();
+
+let saveAppearanceTimer = null;
+
+// Le skin peut être réglé dès le lobby, avant même de rejoindre l'arène : il
+// est stocké en local (voir appearance.js), puis republié dans ton profil
+// public pour que tes coéquipiers te voient dans leur accueil.
 initAppearancePicker({
-  onChange: (appearance) => {
-    if (currentUser) saveAppearanceToProfile(currentUser.uid, appearance);
+  onChange: () => {
+    renderHomeParty();
+    scheduleAppearanceSave();
   },
 });
 
 function clearSubscriptions() {
   unsubscribers.forEach((unsub) => unsub());
   unsubscribers = [];
-  appearanceSubs.forEach((unsub) => unsub());
-  appearanceSubs.clear();
-  appearanceByUid.clear();
+  memberAppearanceUnsubs.forEach((unsub) => unsub());
+  memberAppearanceUnsubs.clear();
+  memberAppearances.clear();
+  clearTimeout(saveAppearanceTimer);
+
+  currentFriends = [];
+  currentGroups = [];
+  pendingFriendRequestCount = 0;
+  pendingGroupInviteCount = 0;
+  updateFriendsBadge();
 }
 
 function showAuthScreen() {
@@ -92,6 +123,7 @@ function showLobbyScreen() {
   authScreen.hidden = true;
   lobbyScreen.hidden = false;
   menuEl.style.display = 'none';
+  showTab('home');
 }
 
 function showGameScreen() {
@@ -104,6 +136,26 @@ function emptyItem(text) {
   li.className = 'muted';
   li.textContent = text;
   return li;
+}
+
+// --- Catégories (colonne de gauche) -------------------------------------------
+function showTab(name) {
+  navItems.forEach((item) => item.classList.toggle('active', item.dataset.tab === name));
+  document.querySelectorAll('.lobby-tab').forEach((section) => {
+    section.hidden = section.id !== `lobby-tab-${name}`;
+  });
+  lobbyError.textContent = '';
+}
+
+navItems.forEach((item) => {
+  item.addEventListener('click', () => showTab(item.dataset.tab));
+});
+
+// Pastille sur "Amis" : demandes d'ami + invitations de groupe en attente.
+function updateFriendsBadge() {
+  const total = pendingFriendRequestCount + pendingGroupInviteCount;
+  friendsBadge.hidden = total === 0;
+  friendsBadge.textContent = String(total);
 }
 
 // --- Onglets connexion / inscription -----------------------------------------
@@ -151,6 +203,104 @@ signupForm.addEventListener('submit', async (e) => {
 });
 
 logoutButton.addEventListener('click', () => signOutUser());
+
+// --- Accueil : ton perso, ou celui de tout ton groupe --------------------------
+// Simplification : un joueur peut être dans plusieurs groupes, mais un seul
+// sert pour une partie donnée — le premier de la liste. C'est celui qu'on
+// affiche ici ET celui qu'on envoie au serveur en cliquant sur Jouer.
+function getActiveGroup() {
+  return currentGroups[0] || null;
+}
+
+// Toi en premier, puis les autres membres du groupe actif. Seul, tu es seul.
+function getPartyMembers() {
+  const me = {
+    uid: currentUser.uid,
+    pseudo: currentUser.displayName || currentUser.email,
+    appearance: getAppearance(),
+  };
+  const group = getActiveGroup();
+  if (!group) return [me];
+
+  const others = group.members
+    .filter((uid) => uid !== currentUser.uid)
+    .map((uid) => ({
+      uid,
+      pseudo: group.memberPseudos?.[uid] || '?',
+      appearance: memberAppearances.get(uid) || DEFAULT_APPEARANCE,
+    }));
+  return [me, ...others];
+}
+
+function renderHomeParty() {
+  if (!currentUser) return;
+  homePartyEl.innerHTML = '';
+  getPartyMembers().forEach((member) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'party-member';
+    wrapper.appendChild(createCharacterElement(member.appearance));
+
+    const name = document.createElement('div');
+    name.className = 'party-name';
+    name.textContent = member.pseudo;
+    wrapper.appendChild(name);
+
+    homePartyEl.appendChild(wrapper);
+  });
+}
+
+// Garde un abonnement au profil de chaque membre du groupe actif (et
+// seulement lui) pour afficher leur skin, en ajoutant/retirant ce qu'il faut
+// quand le groupe change.
+function syncMemberAppearanceListeners() {
+  // Membres de TOUS tes groupes (et pas seulement du groupe actif) : l'accueil
+  // n'affiche que le groupe actif, mais la liste de gestion (onglet Amis)
+  // montre les persos des membres de chaque groupe.
+  const wanted = new Set(
+    currentUser
+      ? currentGroups.flatMap((g) => g.members).filter((uid) => uid !== currentUser.uid)
+      : []
+  );
+
+  memberAppearanceUnsubs.forEach((unsub, uid) => {
+    if (wanted.has(uid)) return;
+    unsub();
+    memberAppearanceUnsubs.delete(uid);
+    memberAppearances.delete(uid);
+  });
+
+  wanted.forEach((uid) => {
+    if (memberAppearanceUnsubs.has(uid)) return;
+    memberAppearanceUnsubs.set(
+      uid,
+      listenUserAppearance(uid, (appearance) => {
+        memberAppearances.set(uid, appearance);
+        renderHomeParty();
+        renderGroupsList();
+      })
+    );
+  });
+}
+
+// Le sélecteur de couleur déclenche un événement à chaque pixel de
+// déplacement : on attend qu'il se calme avant d'écrire dans Firestore.
+function scheduleAppearanceSave() {
+  if (!currentUser) return;
+  clearTimeout(saveAppearanceTimer);
+  const uid = currentUser.uid;
+  saveAppearanceTimer = setTimeout(() => {
+    saveMyAppearance(uid, getAppearance()).catch((error) => {
+      console.warn('[apparence] impossible de publier le skin', error);
+    });
+  }, 400);
+}
+
+enterGameButton.addEventListener('click', () => {
+  // Le groupe actif sert au serveur à mettre les coéquipiers dans la même
+  // équipe et à les faire spawn ensemble (voir game-session.js et network.js).
+  setActiveGroupId(getActiveGroup()?.id || null);
+  showGameScreen();
+});
 
 // --- Amis ----------------------------------------------------------------
 function isAlreadyFriend(uid) {
@@ -200,6 +350,9 @@ friendSearchForm.addEventListener('submit', async (e) => {
 
 function renderIncomingRequests(requests) {
   if (!currentUser) return;
+  pendingFriendRequestCount = requests.length;
+  updateFriendsBadge();
+
   friendRequestsList.innerHTML = '';
   if (requests.length === 0) {
     friendRequestsList.appendChild(emptyItem('Aucune demande en attente.'));
@@ -270,6 +423,9 @@ groupCreateForm.addEventListener('submit', async (e) => {
 
 function renderIncomingGroupInvites(invites) {
   if (!currentUser) return;
+  pendingGroupInviteCount = invites.length;
+  updateFriendsBadge();
+
   groupInvitesList.innerHTML = '';
   if (invites.length === 0) {
     groupInvitesList.appendChild(emptyItem('Aucune invitation en attente.'));
@@ -300,35 +456,11 @@ function renderIncomingGroupInvites(invites) {
   });
 }
 
-// S'abonne en direct à l'apparence de chaque uid utile (membres de tous tes
-// groupes), et se désabonne de ceux qui ne le sont plus. `onUpdate` est
-// rappelé à chaque fois qu'une de ces apparences change (ou arrive pour la
-// première fois), pour redessiner les groupes avec la donnée à jour.
-function ensureAppearanceSubscriptions(groups, onUpdate) {
-  const neededUids = new Set(groups.flatMap((g) => g.members));
-
-  appearanceSubs.forEach((unsub, uid) => {
-    if (!neededUids.has(uid)) {
-      unsub();
-      appearanceSubs.delete(uid);
-      appearanceByUid.delete(uid);
-    }
-  });
-
-  neededUids.forEach((uid) => {
-    if (appearanceSubs.has(uid)) return;
-    appearanceSubs.set(
-      uid,
-      listenUserAppearance(uid, (appearance) => {
-        appearanceByUid.set(uid, appearance);
-        onUpdate();
-      })
-    );
-  });
-}
-
+// Un membre de groupe : avatar (skin choisi) + pseudo en dessous, plutôt
+// qu'une simple liste de noms à plat.
 function buildMemberCard(uid, pseudo) {
-  const appearance = appearanceByUid.get(uid) || DEFAULT_APPEARANCE;
+  const appearance =
+    uid === currentUser?.uid ? getAppearance() : memberAppearances.get(uid) || DEFAULT_APPEARANCE;
 
   const card = document.createElement('div');
   card.className = 'member-card';
@@ -350,31 +482,33 @@ function buildMemberCard(uid, pseudo) {
   return card;
 }
 
-function renderGroups(groups) {
-  if (!currentUser) return;
-  currentGroups = groups;
-  ensureAppearanceSubscriptions(groups, () => renderGroups(currentGroups));
-
+// Liste de gestion des groupes (onglet Amis) : c'est ici qu'on crée, invite,
+// quitte ou supprime. L'accueil, lui, n'affiche pas de nom de groupe mais
+// directement les persos des membres.
+function renderGroupsList() {
   groupsList.innerHTML = '';
-  if (groups.length === 0) {
+  if (currentGroups.length === 0) {
     groupsList.appendChild(emptyItem('Pas encore de groupe.'));
     return;
   }
-  groups.forEach((group) => {
+  currentGroups.forEach((group, index) => {
     const li = document.createElement('li');
     li.className = 'group-item';
 
     const title = document.createElement('div');
     title.className = 'group-title';
-    title.textContent = group.name;
+    const memberCount = group.members.length;
+    title.textContent = `${group.name} (${memberCount} membre${memberCount > 1 ? 's' : ''})`;
+    // Un seul groupe sert à jouer (voir getActiveGroup) : on le signale
+    // quand il y en a plusieurs pour ne pas se demander lequel s'affiche à l'accueil.
+    if (currentGroups.length > 1 && index === 0) title.textContent += ' — actif';
     li.appendChild(title);
 
-    // Les joueurs du groupe, directement — avatar (skin choisi) + pseudo en
-    // dessous, plutôt qu'une liste de noms à plat.
+    // Les joueurs du groupe, directement — avatar (skin choisi) + pseudo dessous.
     const membersRow = document.createElement('div');
     membersRow.className = 'group-members-row';
     group.members.forEach((uid) => {
-      membersRow.appendChild(buildMemberCard(uid, group.memberPseudos[uid]));
+      membersRow.appendChild(buildMemberCard(uid, group.memberPseudos?.[uid]));
     });
     li.appendChild(membersRow);
 
@@ -430,15 +564,13 @@ function renderGroups(groups) {
   });
 }
 
-// --- Entrer dans la partie ---------------------------------------------------
-enterGameButton.addEventListener('click', () => {
-  // Le groupe actif sert au serveur à mettre les coéquipiers dans la même
-  // équipe et à les faire spawn ensemble (voir game-session.js et
-  // network.js). Simplification : si tu es dans plusieurs groupes, c'est le
-  // premier de la liste qui est utilisé pour cette partie.
-  setActiveGroupId(currentGroups[0]?.id || null);
-  showGameScreen();
-});
+function renderGroups(groups) {
+  if (!currentUser) return;
+  currentGroups = groups;
+  renderGroupsList();
+  syncMemberAppearanceListeners();
+  renderHomeParty();
+}
 
 // --- État d'authentification -------------------------------------------------
 onAuthChange((user) => {
@@ -451,12 +583,15 @@ onAuthChange((user) => {
   }
 
   lobbyPseudoEl.textContent = user.displayName || user.email;
+  lobbyEmailEl.textContent = user.email || '';
   showLobbyScreen();
+  renderHomeParty(); // ton perso s'affiche tout de suite, sans attendre les groupes
 
-  // S'assure que le profil Firestore reflète bien le skin actuel dès la
-  // connexion (utile si le compte existait avant l'ajout de cette fonction,
-  // ou si le choix a été fait sur cet appareil avant de se connecter).
-  saveAppearanceToProfile(user.uid, getAppearance());
+  // Republie le skin de cet appareil dans ton profil public : c'est ce que
+  // verront tes coéquipiers dans leur accueil.
+  saveMyAppearance(user.uid, getAppearance()).catch((error) => {
+    console.warn('[apparence] impossible de publier le skin', error);
+  });
 
   unsubscribers.push(listenIncomingRequests(user.uid, renderIncomingRequests));
   unsubscribers.push(listenFriends(user.uid, renderFriends));
