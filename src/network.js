@@ -19,8 +19,7 @@ let socket = null;
 //   onHpUpdate, onYouDied, onPlayerDied, onYouRespawned, onPlayerRespawned,
 //   onHitConfirmed, onTeamAssigned,
 //   onYourShield, onPlayerShieldSteps, onYourMoney,
-//   onCurrentVests, onVestSpawned, onVestRemoved, onYourVestCount,
-//   onCurrentWeaponPickups, onWeaponPickupSpawned, onWeaponPickupRemoved, onYourWeapons,
+//   onYourVestCount, onYourWeapons,
 //   onYourAbilities,
 // }
 // groupId : identifiant du groupe Firestore actif (voir game-session.js), ou
@@ -93,32 +92,8 @@ export function connectToServer(pseudo, appearance, groupId, handlers) {
     handlers.onYourMoney?.(money);
   });
 
-  socket.on('current-vests', (items) => {
-    handlers.onCurrentVests?.(items);
-  });
-
-  socket.on('vest-spawned', (data) => {
-    handlers.onVestSpawned?.(data);
-  });
-
-  socket.on('vest-removed', (data) => {
-    handlers.onVestRemoved?.(data);
-  });
-
   socket.on('your-vest-count', ({ count }) => {
     handlers.onYourVestCount?.(count);
-  });
-
-  socket.on('current-weapon-pickups', (items) => {
-    handlers.onCurrentWeaponPickups?.(items);
-  });
-
-  socket.on('weapon-pickup-spawned', (data) => {
-    handlers.onWeaponPickupSpawned?.(data);
-  });
-
-  socket.on('weapon-pickup-removed', (data) => {
-    handlers.onWeaponPickupRemoved?.(data);
   });
 
   socket.on('your-weapons', ({ weapons }) => {
@@ -152,22 +127,9 @@ export function sendShoot(origin, direction, slot) {
   socket.emit('shoot', { origin, direction, slot });
 }
 
-export function sendCollectVest(vestId) {
-  if (!socket?.connected) return;
-  socket.emit('collect-vest', { vestId });
-}
-
 export function sendUseVest() {
   if (!socket?.connected) return;
   socket.emit('use-vest');
-}
-
-// `slot` (0 ou 1) : slot actuellement sélectionné, utilisé par le serveur
-// seulement si le stuff est déjà plein (voir server.js) pour savoir lequel
-// remplacer.
-export function sendCollectWeapon(pickupId, slot) {
-  if (!socket?.connected) return;
-  socket.emit('collect-weapon', { pickupId, slot });
 }
 
 // Boutique : itemId vient du catalogue défini dans shop.js (ex. "vest",

@@ -55,24 +55,6 @@
       padding: 6px 10px;
       border-radius: 4px;
     }
-    #shop-prompt {
-      position: fixed;
-      top: calc(50% + 40px);
-      left: 50%;
-      transform: translateX(-50%);
-      display: none;
-      color: white;
-      font-family: system-ui, sans-serif;
-      font-size: 0.9rem;
-      font-weight: 600;
-      background: rgba(0, 0, 0, 0.55);
-      border: 1px solid rgba(255, 210, 63, 0.5);
-      padding: 6px 14px;
-      border-radius: 6px;
-      z-index: 6;
-      pointer-events: none;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-    }
     #crosshair {
       position: fixed;
       top: 50%;
@@ -766,7 +748,6 @@
 </head>
 <body>
   <div id="loading">Chargement de la map…</div>
-  <div id="shop-prompt">B — Ouvrir la boutique</div>
   <div id="crosshair"></div>
   <div id="damage-flash"></div>
 
@@ -794,9 +775,8 @@
     <p id="respawn-countdown">Réapparition dans 3s…</p>
   </div>
 
-  <!-- Boutique : s'ouvre en s'approchant de la table posée au centre de la
-       salle (voir buildShopTable/SHOP_POSITION dans main.js) et en appuyant
-       sur B. -->
+  <!-- Boutique : s'ouvre et se ferme avec la touche B, depuis n'importe où
+       dans la salle (voir la section "Boutique" de main.js). -->
   <div id="shop-screen" class="screen" hidden>
     <div class="panel shop-panel">
       <div class="shop-header">
@@ -927,7 +907,7 @@
 
   <div id="menu">
     <h1>Mini Warzone</h1>
-    <p>ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, 1/2 pour changer d'arme, T pour ramasser, P pour utiliser un gilet, B pour la boutique, Échap pour sortir</p>
+    <p>ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, 1/2 pour changer d'arme, P pour utiliser un gilet, B pour la boutique, Échap pour sortir</p>
     <button id="play-button" disabled>Chargement…</button>
     <button id="quit-button" class="secondary" type="button">Quitter la partie</button>
   </div>

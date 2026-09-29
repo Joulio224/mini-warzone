@@ -10,17 +10,14 @@ import {
   connectToServer,
   sendMove,
   sendShoot,
-  sendCollectVest,
   sendUseVest,
-  sendCollectWeapon,
   sendBuyItem,
 } from './network.js';
 import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
 import { getAppearance, getEmojiTexture, sanitizeAppearance, DEFAULT_APPEARANCE } from './appearance.js';
 import { getActiveGroupId } from './game-session.js';
 // Toutes les données de la map qui ne sont pas de la géométrie visuelle pure
-// (boîtes de collision, spawns d'équipe, points d'apparition des armes/gilets,
-// lumières d'ambiance) — doit rester identique à
+// (boîtes de collision, spawns d'équipe, lumières d'ambiance) — doit rester identique à
 // mini-warzone-server/map-data.json. La géométrie visible, elle, vient de
 // public/assets/map.glb (voir plus bas).
 import mapData from './map-data.json';
@@ -140,91 +137,6 @@ const groundObjects = [fallbackGround];
 // THREE.Box3 par obstacle. Vérifiées séparément du sol (vertical).
 const collisionBoxes = [];
 
-// Position de la table de la boutique — juste entre les deux caisses
-// centrales de la salle (x=±2.5, z=0 dans mapData.colliders), pile au
-// milieu de la salle. Réutilisée pour le test de proximité qui autorise (ou
-// pas) l'ouverture avec B, voir plus bas (section "Boutique").
-const SHOP_POSITION = { x: 0, z: 0 };
-const SHOP_INTERACTION_RADIUS = 2.4;
-
-// Table de la boutique — un établi bas-poly (plateau + pieds + quelques
-// outils) posé directement dans la scène, indépendamment de la map .glb
-// chargée plus bas : elle s'ajoute par-dessus, comme les gilets/armes au
-// sol. Sa hitbox est ajoutée à collisionBoxes comme n'importe quel obstacle.
-function buildShopTable() {
-  const woodMaterial = new THREE.MeshStandardMaterial({ color: 0x6b4a30, roughness: 0.85 });
-  const toolMaterial = new THREE.MeshStandardMaterial({ color: 0x9aa5ad, metalness: 0.7, roughness: 0.3 });
-  const handleMaterial = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.6 });
-  const caseMaterial = new THREE.MeshStandardMaterial({ color: 0xc23616, roughness: 0.6 });
-
-  const table = new THREE.Group();
-
-  const tabletop = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.12, 1.2), woodMaterial);
-  tabletop.position.y = 0.9;
-  tabletop.castShadow = true;
-  tabletop.receiveShadow = true;
-  table.add(tabletop);
-
-  const legGeometry = new THREE.BoxGeometry(0.1, 0.9, 0.1);
-  [[-1.05, -0.45], [1.05, -0.45], [-1.05, 0.45], [1.05, 0.45]].forEach(([lx, lz]) => {
-    const leg = new THREE.Mesh(legGeometry, woodMaterial);
-    leg.position.set(lx, 0.45, lz);
-    leg.castShadow = true;
-    table.add(leg);
-  });
-
-  // Quelques outils posés dessus — juste assez de silhouette pour se lire
-  // comme un établi, dans le même esprit low-poly que le reste du décor.
-  const wrench = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.08), toolMaterial);
-  wrench.position.set(-0.6, 0.98, 0.2);
-  wrench.rotation.y = 0.4;
-  wrench.castShadow = true;
-  table.add(wrench);
-
-  const screwdriverHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.22, 8), handleMaterial);
-  screwdriverHandle.position.set(0.1, 0.98, -0.25);
-  screwdriverHandle.rotation.z = Math.PI / 2;
-  table.add(screwdriverHandle);
-  const screwdriverShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.28, 6), toolMaterial);
-  screwdriverShaft.position.set(0.36, 0.98, -0.25);
-  screwdriverShaft.rotation.z = Math.PI / 2;
-  table.add(screwdriverShaft);
-
-  const toolbox = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.22, 0.28), caseMaterial);
-  toolbox.position.set(0.7, 1.03, 0.15);
-  toolbox.castShadow = true;
-  table.add(toolbox);
-
-  const boltGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.06, 8);
-  const bolt1 = new THREE.Mesh(boltGeometry, toolMaterial);
-  bolt1.position.set(-0.2, 0.99, 0.32);
-  table.add(bolt1);
-  const bolt2 = new THREE.Mesh(boltGeometry, toolMaterial);
-  bolt2.position.set(-0.05, 0.99, 0.35);
-  table.add(bolt2);
-
-  // Petit repère lumineux au-dessus — pour repérer la boutique de loin dans
-  // la salle, comme pour les gilets/armes au sol.
-  const beacon = new THREE.PointLight(0xffd23f, 2, 6, 2);
-  beacon.position.set(0, 1.7, 0);
-  table.add(beacon);
-
-  table.position.set(SHOP_POSITION.x, 0, SHOP_POSITION.z);
-  scene.add(table);
-  collisionBoxes.push(
-    new THREE.Box3(
-      new THREE.Vector3(SHOP_POSITION.x - 1.15, 0, SHOP_POSITION.z - 0.55),
-      new THREE.Vector3(SHOP_POSITION.x + 1.15, 1.0, SHOP_POSITION.z + 0.55)
-    )
-  );
-}
-
-function isNearShopTable() {
-  const dx = camera.position.x - SHOP_POSITION.x;
-  const dz = camera.position.z - SHOP_POSITION.z;
-  return Math.sqrt(dx * dx + dz * dz) <= SHOP_INTERACTION_RADIUS;
-}
-
 // ---------------------------------------------------------------------------
 // Map : chargée depuis un fichier .glb (public/assets/map.glb) — plus aucune
 // géométrie de salle codée en dur ici. Tout ce que le rendu 3D ne peut pas
@@ -284,8 +196,6 @@ mapLoader.load(
       light.position.set(l.x, l.y, l.z);
       scene.add(light);
     });
-
-    buildShopTable();
 
     loadingEl.style.display = 'none';
     playButton.disabled = false;
@@ -351,9 +261,6 @@ const WEAPONS = [
   { id: 'smg', name: 'Mitraillette', cooldown: 0.09, autoFire: true, color: 0x333d47 },
   { id: 'rifle', name: 'Fusil', cooldown: 0.18, autoFire: true, color: 0x3a3226 },
 ];
-// Couleurs des pickups au sol (bien plus vives que la couleur "réaliste" du
-// modèle en main ci-dessus, pour qu'on les repère facilement à distance).
-const WEAPON_PICKUP_COLORS = { smg: 0x00e5ff, rifle: 0xff9f1c };
 
 function buildPistolModel(color) {
   const group = new THREE.Group();
@@ -469,7 +376,7 @@ function showMuzzleFlash() {
 // Met à jour le modèle 3D visible (et sa teinte de rareté) d'après le slot
 // actuellement sélectionné et le contenu réel de myWeapons — appelée aussi
 // bien quand on change de slot (touches 1/2) que quand le contenu d'un
-// slot change (ramassage au sol, achat en boutique, reset au respawn).
+// slot change (achat en boutique, reset au respawn).
 function refreshEquippedWeaponDisplay() {
   const equipped = myWeapons[currentSlot];
   if (!equipped) {
@@ -536,8 +443,8 @@ function currentMaxShield() {
 }
 
 // "Stuff" du joueur : 2 slots d'arme (le 0 est toujours le pistolet de
-// départ au premier spawn, mais peut être remplacé par un ramassage au sol
-// une fois le stuff plein — voir plus bas) + un compteur de gilets en
+// départ au premier spawn, jamais perdu — seule sa rareté peut changer via
+// la boutique) + un compteur de gilets en
 // réserve (max myMaxVestSlots, à utiliser avec la touche P pour les
 // convertir en bouclier). Chaque slot d'arme non vide est maintenant un
 // objet { id, rarity } (et plus une simple chaîne) depuis l'introduction du
@@ -744,86 +651,6 @@ function handleMoneyUpdate(money) {
 }
 
 // ---------------------------------------------------------------------------
-// Gilets pare-balle au sol — réapparaissent à des points fixes après un
-// délai. Ramassés, ils remplissent le bouclier par paliers de SHIELD_PER_VEST.
-// ---------------------------------------------------------------------------
-const vestMeshes = new Map(); // vestId -> mesh
-const VEST_COLLECT_RADIUS_CLIENT = 2.0;
-
-function createVestMesh() {
-  const mesh = new THREE.Mesh(
-    new THREE.OctahedronGeometry(0.32, 0),
-    new THREE.MeshStandardMaterial({
-      color: 0x3a86ff,
-      emissive: 0x1c4fbf,
-      emissiveIntensity: 1.1,
-      metalness: 0.35,
-      roughness: 0.4,
-    })
-  );
-  mesh.castShadow = true;
-  const glow = new THREE.PointLight(0x3a86ff, 1.5, 4, 2);
-  mesh.add(glow);
-  return mesh;
-}
-
-function spawnVestMesh(id, position) {
-  if (vestMeshes.has(id)) return;
-  const mesh = createVestMesh();
-  mesh.position.set(position.x, position.y, position.z);
-  scene.add(mesh);
-  vestMeshes.set(id, mesh);
-}
-
-function removeVestMesh(id) {
-  const mesh = vestMeshes.get(id);
-  if (!mesh) return;
-  scene.remove(mesh);
-  vestMeshes.delete(id);
-}
-
-// ---------------------------------------------------------------------------
-// Armes ramassables au sol — même principe que les gilets (points fixes,
-// réapparition différée), mais remplissent le slot 2 du stuff au lieu du
-// bouclier. Couleur = celle de l'arme réelle (voir WEAPONS plus bas).
-// ---------------------------------------------------------------------------
-const weaponPickupMeshes = new Map(); // pickupId -> { mesh, weaponId }
-const WEAPON_PICKUP_COLLECT_RADIUS_CLIENT = 2.0;
-
-function createWeaponPickupMesh(weaponId) {
-  const color = WEAPON_PICKUP_COLORS[weaponId] || 0xffffff;
-  const mesh = new THREE.Mesh(
-    new THREE.ConeGeometry(0.28, 0.5, 5),
-    new THREE.MeshStandardMaterial({
-      color,
-      emissive: color,
-      emissiveIntensity: 0.6,
-      metalness: 0.4,
-      roughness: 0.35,
-    })
-  );
-  mesh.castShadow = true;
-  const glow = new THREE.PointLight(color, 1.3, 4, 2);
-  mesh.add(glow);
-  return mesh;
-}
-
-function spawnWeaponPickupMesh(id, weaponId, position) {
-  if (weaponPickupMeshes.has(id)) return;
-  const mesh = createWeaponPickupMesh(weaponId);
-  mesh.position.set(position.x, position.y, position.z);
-  scene.add(mesh);
-  weaponPickupMeshes.set(id, { mesh, weaponId });
-}
-
-function removeWeaponPickupMesh(id) {
-  const entry = weaponPickupMeshes.get(id);
-  if (!entry) return;
-  scene.remove(entry.mesh);
-  weaponPickupMeshes.delete(id);
-}
-
-// ---------------------------------------------------------------------------
 // Déplacement, saut, accroupi, visée
 // ---------------------------------------------------------------------------
 const move = { forward: false, backward: false, left: false, right: false };
@@ -945,57 +772,23 @@ document.addEventListener('keydown', (e) => {
   if (myVestCount > 0) sendUseVest();
 });
 
-// Touche T = ramasser l'objet au sol le plus proche (arme ou gilet), à
-// portée. Un seul ramassage par appui (pas de spam en la maintenant).
-document.addEventListener('keydown', (e) => {
-  if (e.code !== 'KeyT' || isDead || isShopOpen()) return;
-
-  let closestId = null;
-  let closestType = null;
-  let closestDist = Infinity;
-
-  weaponPickupMeshes.forEach(({ mesh }, id) => {
-    const dist = camera.position.distanceTo(mesh.position);
-    if (dist <= WEAPON_PICKUP_COLLECT_RADIUS_CLIENT && dist < closestDist) {
-      closestDist = dist;
-      closestId = id;
-      closestType = 'weapon';
-    }
-  });
-  vestMeshes.forEach((mesh, id) => {
-    const dist = camera.position.distanceTo(mesh.position);
-    if (dist <= VEST_COLLECT_RADIUS_CLIENT && dist < closestDist) {
-      closestDist = dist;
-      closestId = id;
-      closestType = 'vest';
-    }
-  });
-
-  if (!closestId) return;
-  if (closestType === 'weapon') sendCollectWeapon(closestId, currentSlot);
-  else sendCollectVest(closestId);
-});
-
 // ---------------------------------------------------------------------------
 // Boutique (voir shop.js)
 // ---------------------------------------------------------------------------
-// Magasin physique : une table posée au centre de la salle (voir
-// buildShopTable). La touche B ouvre la boutique seulement si on est à
-// portée de cette table — sinon, comme avant, elle ne fait rien à
-// l'ouverture (fermer reste possible depuis n'importe où, une fois dedans).
+// La touche B ouvre/ferme la boutique depuis n'importe où (plus de magasin
+// physique dans la salle). Le serveur reste seul juge des achats — voir
+// shop.js et 'buy-item' dans mini-warzone-server/server.js.
 initShop({
   onBuy: (itemId) => sendBuyItem(itemId),
   onClose: () => controls.lock(),
 });
-
-const shopPromptEl = document.getElementById('shop-prompt');
 
 document.addEventListener('keydown', (e) => {
   if (e.code !== 'KeyB' || isDead || !networkStarted) return;
   if (isShopOpen()) {
     closeShop();
     controls.lock(); // touche B pressée = geste utilisateur direct, le verrouillage du pointeur est autorisé
-  } else if (isNearShopTable()) {
+  } else {
     controls.unlock(); // affiche le curseur pour pouvoir cliquer sur les boutons de la boutique
     openShop(getShopState());
   }
@@ -1228,14 +1021,7 @@ function startNetwork() {
     onYourShield: handleShieldUpdate,
     onPlayerShieldSteps: updatePlayerShieldSteps,
     onYourMoney: handleMoneyUpdate,
-    onCurrentVests: (items) => items.forEach((item) => spawnVestMesh(item.id, item.position)),
-    onVestSpawned: ({ id, position }) => spawnVestMesh(id, position),
-    onVestRemoved: ({ id }) => removeVestMesh(id),
     onYourVestCount: handleVestCountUpdate,
-    onCurrentWeaponPickups: (items) =>
-      items.forEach((item) => spawnWeaponPickupMesh(item.id, item.weaponId, item.position)),
-    onWeaponPickupSpawned: ({ id, weaponId, position }) => spawnWeaponPickupMesh(id, weaponId, position),
-    onWeaponPickupRemoved: ({ id }) => removeWeaponPickupMesh(id),
     onYourWeapons: handleWeaponsUpdate,
     onYourAbilities: handleAbilitiesUpdate,
   });
@@ -1333,19 +1119,6 @@ function animate() {
   weaponGroup.rotation.x = -recoilKick * 0.35;
   weaponGroup.position.z += recoilKick * 0.06;
 
-  // --- Gilets pare-balle au sol : juste l'animation (flottement/rotation).
-  // Le ramassage se fait maintenant à la touche T, plus automatiquement.
-  vestMeshes.forEach((mesh) => {
-    mesh.rotation.y += delta * 1.6;
-    mesh.position.y += Math.sin(clock.elapsedTime * 3 + mesh.id) * 0.0015;
-  });
-
-  // --- Armes au sol : même animation, ramassage aussi à la touche T.
-  weaponPickupMeshes.forEach(({ mesh }) => {
-    mesh.rotation.y += delta * 1.6;
-    mesh.position.y += Math.sin(clock.elapsedTime * 3 + mesh.id) * 0.0015;
-  });
-
   // Autres joueurs : on lisse leur déplacement plutôt que de les téléporter
   // à chaque message reçu du serveur (ça "saccaderait" sinon).
   otherPlayers.forEach(({ mesh, targetPosition, targetRotationY }) => {
@@ -1363,12 +1136,6 @@ function animate() {
       const facing = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
       sendMove({ x: camera.position.x, y: camera.position.y, z: camera.position.z }, facing.y);
     }
-  }
-
-  // --- Prompt "B — Ouvrir la boutique" : visible seulement à portée de la
-  // table, mort exclu, et pas pendant que la boutique est déjà ouverte.
-  if (shopPromptEl) {
-    shopPromptEl.style.display = !isDead && !isShopOpen() && isNearShopTable() ? 'block' : 'none';
   }
 
   composer.render();

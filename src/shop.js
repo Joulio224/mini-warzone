@@ -7,10 +7,9 @@
 // juge de ce qui est réellement débité/accordé — tout ce qui est calculé ici
 // (dégâts, prix) sert uniquement à l'affichage.
 //
-// La boutique s'ouvre avec la touche B, mais seulement à proximité de la
-// table posée au centre de la salle (voir buildShopTable/SHOP_POSITION dans
-// main.js, section "Boutique") — ce module-ci n'a pas besoin de le savoir,
-// il expose juste openShop()/closeShop()/isShopOpen() à qui les appelle.
+// La boutique s'ouvre et se ferme avec la touche B, depuis n'importe où (voir
+// la section "Boutique" de main.js) — ce module-ci expose juste
+// openShop()/closeShop()/isShopOpen() à qui les appelle.
 
 // 3 paliers de rareté, du plus faible au plus fort. `color` sert à la fois
 // à la pastille de rareté dans l'inventaire (voir main.js) et à la teinte
@@ -64,7 +63,7 @@ function buildCatalog() {
     id: 'vest',
     category: 'vest',
     name: 'Gilet pare-balle',
-    description: "Ajoute un gilet en réserve. Clic droit sur le slot 3 en jeu pour l'activer et regagner du bouclier.",
+    description: "Ajoute un gilet en réserve. Touche P en jeu pour l'activer et regagner du bouclier.",
     price: VEST_PRICE,
   });
 
