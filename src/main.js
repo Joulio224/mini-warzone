@@ -15,7 +15,8 @@ import {
 } from './network.js';
 import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
 import { getAppearance, getEmojiTexture, sanitizeAppearance, DEFAULT_APPEARANCE } from './appearance.js';
-import { getActiveGroupId } from './game-session.js';
+import { getActiveGroupId, getActiveMode, getActiveTeam } from './game-session.js';
+import { getKeybinds } from './keybinds.js';
 // Toutes les données de la map qui ne sont pas de la géométrie visuelle pure
 // (boîtes de collision, spawns d'équipe, lumières d'ambiance) — doit rester identique à
 // mini-warzone-server/map-data.json. La géométrie visible, elle, vient de
@@ -406,9 +407,36 @@ function selectSlot(slot) {
 }
 document.addEventListener('keydown', (e) => {
   if (isShopOpen()) return; // pas de changement d'arme "à l'aveugle" pendant qu'on regarde la boutique
-  if (e.code === 'Digit1') selectSlot(0);
-  if (e.code === 'Digit2') selectSlot(1);
+  if (e.code === keybinds.weaponSlot1) selectSlot(0);
+  if (e.code === keybinds.weaponSlot2) selectSlot(1);
 });
+
+// Molette = change de slot (pas besoin d'assigner une touche pour ça —
+// toujours actif). Un seul cran par geste de molette : sur un pavé tactile,
+// un même mouvement peut déclencher plusieurs 'wheel' de suite, d'où le
+// petit temps mort ci-dessous. Un seul slot vide à sauter avec seulement 2
+// slots d'arme, mais la boucle reste correcte si un jour il y en a plus.
+let lastWheelSwitchAt = 0;
+const WHEEL_SWITCH_COOLDOWN_MS = 150;
+document.addEventListener(
+  'wheel',
+  (e) => {
+    if (isShopOpen() || isDead || !networkStarted) return;
+    const now = performance.now();
+    if (now - lastWheelSwitchAt < WHEEL_SWITCH_COOLDOWN_MS) return;
+    const direction = e.deltaY > 0 ? 1 : -1;
+    const total = myWeapons.length;
+    for (let i = 1; i <= total; i++) {
+      const next = (currentSlot + direction * i + total) % total;
+      if (myWeapons[next]) {
+        lastWheelSwitchAt = now;
+        selectSlot(next);
+        break;
+      }
+    }
+  },
+  { passive: true }
+);
 
 const WEAPON_REST_POSITION = new THREE.Vector3(0.28, -0.25, -0.55);
 const WEAPON_AIM_POSITION = new THREE.Vector3(0, -0.18, -0.35);
@@ -653,6 +681,11 @@ function handleMoneyUpdate(money) {
 // ---------------------------------------------------------------------------
 // Déplacement, saut, accroupi, visée
 // ---------------------------------------------------------------------------
+// Touches configurables (voir keybinds.js + l'onglet Paramètres du lobby) :
+// lues une première fois ici, puis rafraîchies à chaque nouvelle partie dans
+// startNetwork() — inutile de re-render pendant une partie en cours, la
+// page du lobby (où on les modifie) est masquée tant qu'on joue.
+let keybinds = getKeybinds();
 const move = { forward: false, backward: false, left: false, right: false };
 const velocity = new THREE.Vector3();
 const direction = new THREE.Vector3();
@@ -712,31 +745,25 @@ function resolveHorizontalCollisions(prevX, prevZ) {
 
 function onKeyChange(e, isDown) {
   switch (e.code) {
-    case 'KeyW':
-    case 'ArrowUp':
+    case keybinds.forward:
       move.forward = isDown;
       break;
-    case 'KeyS':
-    case 'ArrowDown':
+    case keybinds.backward:
       move.backward = isDown;
       break;
-    case 'KeyA':
-    case 'ArrowLeft':
+    case keybinds.left:
       move.left = isDown;
       break;
-    case 'KeyD':
-    case 'ArrowRight':
+    case keybinds.right:
       move.right = isDown;
       break;
-    case 'Space':
+    case keybinds.jump:
       if (isDown && isGrounded && !isDead) {
         verticalVelocity = JUMP_SPEED;
         isGrounded = false;
       }
       break;
-    case 'ControlLeft':
-    case 'ControlRight':
-    case 'KeyC':
+    case keybinds.crouch:
       isCrouching = isDown;
       break;
   }
@@ -768,7 +795,7 @@ document.addEventListener('mouseup', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.code !== 'KeyP' || isDead || isShopOpen()) return;
+  if (e.code !== keybinds.useVest || isDead || isShopOpen()) return;
   if (myVestCount > 0) sendUseVest();
 });
 
@@ -784,7 +811,7 @@ initShop({
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.code !== 'KeyB' || isDead || !networkStarted) return;
+  if (e.code !== keybinds.shop || isDead || !networkStarted) return;
   if (isShopOpen()) {
     closeShop();
     controls.lock(); // touche B pressée = geste utilisateur direct, le verrouillage du pointeur est autorisé
@@ -993,11 +1020,12 @@ function handleTeamAssigned({ team, spawn }) {
 function startNetwork() {
   if (networkStarted) return;
   networkStarted = true;
+  keybinds = getKeybinds(); // au cas où elles ont été changées depuis le lobby avant de rejouer
 
   const pseudo = auth.currentUser?.displayName || 'Joueur';
   const groupId = getActiveGroupId();
 
-  connectToServer(pseudo, getAppearance(), groupId, {
+  connectToServer(pseudo, getAppearance(), groupId, getActiveMode(), getActiveTeam(), {
     onTeamAssigned: handleTeamAssigned,
     onPlayerJoined: addOtherPlayer,
     onPlayerMoved: updateOtherPlayer,

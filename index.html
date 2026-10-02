@@ -434,6 +434,13 @@
     }
 
     /* Accueil : les persos du groupe (ou le tien, seul) + gros bouton Jouer */
+    .home-mode-label {
+      text-align: center;
+      font-size: 0.85rem;
+      opacity: 0.7;
+      margin-bottom: 8px;
+      min-height: 1.2em;
+    }
     .home-party {
       display: flex;
       flex-wrap: wrap;
@@ -519,6 +526,9 @@
       box-shadow: inset -6px -8px 12px rgba(0, 0, 0, 0.25), 0 4px 10px rgba(0, 0, 0, 0.35);
       transition: background 0.15s ease;
     }
+    /* Mode Équipes : petit anneau coloré sur le perso de l'accueil */
+    .character.team-red .character-body { box-shadow: 0 0 0 3px #e63946, inset -6px -8px 12px rgba(0, 0, 0, 0.25), 0 4px 10px rgba(0, 0, 0, 0.35); }
+    .character.team-blue .character-body { box-shadow: 0 0 0 3px #3a86ff, inset -6px -8px 12px rgba(0, 0, 0, 0.25), 0 4px 10px rgba(0, 0, 0, 0.35); }
 
     .lobby-columns {
       display: grid;
@@ -635,6 +645,15 @@
       gap: 8px;
     }
     .group-title { font-weight: 600; }
+    .group-mode-row { display: flex; align-items: center; gap: 6px; }
+    .group-mode-label { font-size: 0.8rem; opacity: 0.65; }
+    .mode-button {
+      padding: 5px 10px;
+      font-size: 0.8rem;
+      background: rgba(255, 255, 255, 0.08);
+      color: rgba(255, 255, 255, 0.85);
+    }
+    .mode-button.active { background: #e63946; color: white; }
     .group-members-row { display: flex; flex-wrap: wrap; gap: 10px; }
     .member-card {
       display: flex;
@@ -653,6 +672,8 @@
       justify-content: center;
       border: 2px solid rgba(255, 255, 255, 0.15);
     }
+    .member-avatar.team-red { border-color: #e63946; }
+    .member-avatar.team-blue { border-color: #3a86ff; }
     .member-face { font-size: 22px; line-height: 1; }
     .member-name {
       font-size: 0.7rem;
@@ -663,6 +684,20 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .member-team-picker { display: flex; gap: 4px; }
+    .team-dot {
+      width: 16px;
+      height: 16px;
+      padding: 0;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      opacity: 0.5;
+    }
+    .team-dot-red { background: #e63946; }
+    .team-dot-blue { background: #3a86ff; }
+    .team-dot.selected { opacity: 1; border-color: white; }
+    .team-dot:disabled { cursor: default; }
+    .team-dot:not(:disabled) { cursor: pointer; }
     .group-actions { display: flex; gap: 8px; align-items: center; }
     .account-info { margin: 0 0 20px; display: flex; flex-direction: column; gap: 10px; }
     .account-info div {
@@ -676,6 +711,35 @@
     }
     .account-info dt { opacity: 0.6; }
     .account-info dd { margin: 0; font-weight: 600; word-break: break-all; }
+    .keybind-list { margin: 0 0 16px; display: flex; flex-direction: column; gap: 8px; }
+    .keybind-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      font-size: 0.9rem;
+    }
+    .keybind-key {
+      min-width: 76px;
+      padding: 6px 10px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-align: center;
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+    }
+    .keybind-key.listening {
+      background: #e63946;
+      animation: keybind-pulse 1s ease-in-out infinite;
+    }
+    @keyframes keybind-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.55; }
+    }
     .cta {
       width: 100%;
       padding: 14px;
@@ -827,6 +891,7 @@
         <button type="button" class="lobby-nav-item active" data-tab="home"><span class="nav-icon">🏠</span>Accueil</button>
         <button type="button" class="lobby-nav-item" data-tab="friends"><span class="nav-icon">👥</span>Amis<span id="friends-badge" class="nav-badge" hidden></span></button>
         <button type="button" class="lobby-nav-item" data-tab="appearance"><span class="nav-icon">🎨</span>Apparence</button>
+        <button type="button" class="lobby-nav-item" data-tab="settings"><span class="nav-icon">⌨️</span>Paramètres</button>
         <button type="button" class="lobby-nav-item" data-tab="account"><span class="nav-icon">⚙️</span>Compte</button>
       </nav>
     </aside>
@@ -834,6 +899,7 @@
     <main class="lobby-main">
       <!-- Accueil : ton perso (ou tout ton groupe) + gros bouton Jouer -->
       <section id="lobby-tab-home" class="lobby-tab lobby-tab-home">
+        <div id="home-mode-label" class="home-mode-label"></div>
         <div id="home-party" class="home-party"></div>
         <button id="enter-game-button" type="button" class="play-button-big">Jouer</button>
       </section>
@@ -889,6 +955,17 @@
         </div>
       </section>
 
+      <!-- Paramètres : touches personnalisables (voir keybinds.js) -->
+      <section id="lobby-tab-settings" class="lobby-tab" hidden>
+        <div class="lobby-section">
+          <h2>Paramètres</h2>
+          <h3>Touches</h3>
+          <div id="keybind-list" class="keybind-list"></div>
+          <button id="keybind-reset" type="button" class="secondary">Réinitialiser les touches</button>
+          <p id="keybind-error" class="error"></p>
+        </div>
+      </section>
+
       <!-- Compte -->
       <section id="lobby-tab-account" class="lobby-tab" hidden>
         <div class="lobby-section">
@@ -907,7 +984,7 @@
 
   <div id="menu">
     <h1>Mini Warzone</h1>
-    <p>ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, 1/2 pour changer d'arme, P pour utiliser un gilet, B pour la boutique, Échap pour sortir</p>
+    <p id="menu-help">ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, 1/2 pour changer d'arme, P pour utiliser un gilet, B pour la boutique, Échap pour sortir</p>
     <button id="play-button" disabled>Chargement…</button>
     <button id="quit-button" class="secondary" type="button">Quitter la partie</button>
   </div>

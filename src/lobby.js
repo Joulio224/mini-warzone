@@ -5,6 +5,7 @@
 //   Accueil    — ton perso (ou celui de tout ton groupe) + gros bouton Jouer
 //   Amis       — recherche/demandes/liste d'amis + création et gestion des groupes
 //   Apparence  — choix du skin
+//   Paramètres — touches personnalisables (voir keybinds.js)
 //   Compte     — pseudo, email, déconnexion
 import { onAuthChange, signUp, signIn, signOutUser, friendlyAuthError } from './auth.js';
 import {
@@ -25,6 +26,8 @@ import {
   listenIncomingGroupInvites,
   acceptGroupInvite,
   declineGroupInvite,
+  setGroupMode,
+  setMemberTeam,
 } from './groups.js';
 import {
   initAppearancePicker,
@@ -33,6 +36,7 @@ import {
   DEFAULT_APPEARANCE,
 } from './appearance.js';
 import { saveMyAppearance, listenUserAppearance } from './profiles.js';
+import { initKeybindsPicker, getKeybinds, keyLabel, describeMovementKeys } from './keybinds.js';
 import { setActiveGroupId } from './game-session.js';
 
 // --- Éléments DOM ------------------------------------------------------------
@@ -51,7 +55,9 @@ const friendsBadge = document.getElementById('friends-badge');
 const lobbyError = document.getElementById('lobby-error');
 
 const homePartyEl = document.getElementById('home-party');
+const homeModeLabelEl = document.getElementById('home-mode-label');
 const enterGameButton = document.getElementById('enter-game-button');
+const menuHelpEl = document.getElementById('menu-help');
 
 const friendSearchForm = document.getElementById('friend-search-form');
 const friendSearchInput = document.getElementById('friend-search-input');
@@ -113,6 +119,22 @@ function clearSubscriptions() {
   updateFriendsBadge();
 }
 
+// Régénère l'aide du menu de jeu ("ZQSD/WASD pour bouger, ...") d'après les
+// touches actuellement configurées — sinon elle mentirait dès qu'on change
+// une touche dans Paramètres. Appelée au chargement ET à chaque changement
+// de touche (onChange d'initKeybindsPicker) ET juste avant d'afficher le
+// menu, pour ne jamais rester périmée.
+function updateMenuHelp() {
+  if (!menuHelpEl) return;
+  const k = getKeybinds();
+  menuHelpEl.textContent =
+    `${describeMovementKeys(k)} pour bouger, souris pour regarder, clic pour tirer, ` +
+    `molette ou ${keyLabel(k.weaponSlot1)}/${keyLabel(k.weaponSlot2)} pour changer d'arme, ` +
+    `${keyLabel(k.useVest)} pour utiliser un gilet, ${keyLabel(k.shop)} pour la boutique, Échap pour sortir`;
+}
+updateMenuHelp();
+initKeybindsPicker({ onChange: updateMenuHelp });
+
 function showAuthScreen() {
   authScreen.hidden = false;
   lobbyScreen.hidden = true;
@@ -128,6 +150,7 @@ function showLobbyScreen() {
 
 function showGameScreen() {
   lobbyScreen.hidden = true;
+  updateMenuHelp();
   menuEl.style.display = 'flex';
 }
 
@@ -214,12 +237,14 @@ function getActiveGroup() {
 
 // Toi en premier, puis les autres membres du groupe actif. Seul, tu es seul.
 function getPartyMembers() {
+  const group = getActiveGroup();
+  const teamOf = (uid) => (group?.mode === 'team' ? group.memberTeams?.[uid] || null : null);
   const me = {
     uid: currentUser.uid,
     pseudo: currentUser.displayName || currentUser.email,
     appearance: getAppearance(),
+    team: teamOf(currentUser.uid),
   };
-  const group = getActiveGroup();
   if (!group) return [me];
 
   const others = group.members
@@ -228,17 +253,26 @@ function getPartyMembers() {
       uid,
       pseudo: group.memberPseudos?.[uid] || '?',
       appearance: memberAppearances.get(uid) || DEFAULT_APPEARANCE,
+      team: teamOf(uid),
     }));
   return [me, ...others];
 }
 
 function renderHomeParty() {
   if (!currentUser) return;
+  const group = getActiveGroup();
+  const mode = group?.mode === 'team' ? 'team' : 'solo';
+  homeModeLabelEl.textContent = group
+    ? `Mode : ${mode === 'team' ? 'Équipes' : 'Solo'}`
+    : '';
+
   homePartyEl.innerHTML = '';
   getPartyMembers().forEach((member) => {
     const wrapper = document.createElement('div');
     wrapper.className = 'party-member';
-    wrapper.appendChild(createCharacterElement(member.appearance));
+    const characterEl = createCharacterElement(member.appearance);
+    if (member.team) characterEl.classList.add(`team-${member.team}`);
+    wrapper.appendChild(characterEl);
 
     const name = document.createElement('div');
     name.className = 'party-name';
@@ -298,7 +332,11 @@ function scheduleAppearanceSave() {
 enterGameButton.addEventListener('click', () => {
   // Le groupe actif sert au serveur à mettre les coéquipiers dans la même
   // équipe et à les faire spawn ensemble (voir game-session.js et network.js).
-  setActiveGroupId(getActiveGroup()?.id || null);
+  // Mode/équipe : seulement si le créateur du groupe a activé "Équipes" ET
+  // déjà assigné CE joueur à une couleur — sinon on part en solo, comme avant.
+  const group = getActiveGroup();
+  const myTeam = group?.mode === 'team' ? group.memberTeams?.[currentUser.uid] || null : null;
+  setActiveGroupId(group?.id || null, group?.mode || 'solo', myTeam);
   showGameScreen();
 });
 
@@ -457,8 +495,9 @@ function renderIncomingGroupInvites(invites) {
 }
 
 // Un membre de groupe : avatar (skin choisi) + pseudo en dessous, plutôt
-// qu'une simple liste de noms à plat.
-function buildMemberCard(uid, pseudo) {
+// qu'une simple liste de noms à plat. En mode "Équipes", ajoute un repère de
+// couleur d'équipe — éditable seulement par le créateur du groupe.
+function buildMemberCard(uid, pseudo, group, isOwner) {
   const appearance =
     uid === currentUser?.uid ? getAppearance() : memberAppearances.get(uid) || DEFAULT_APPEARANCE;
 
@@ -479,6 +518,26 @@ function buildMemberCard(uid, pseudo) {
   name.textContent = pseudo || '?';
   card.appendChild(name);
 
+  if (group?.mode === 'team') {
+    const currentTeam = group.memberTeams?.[uid] || null;
+    avatar.classList.toggle('team-red', currentTeam === 'red');
+    avatar.classList.toggle('team-blue', currentTeam === 'blue');
+
+    const picker = document.createElement('div');
+    picker.className = 'member-team-picker';
+    ['red', 'blue'].forEach((team) => {
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = `team-dot team-dot-${team}`;
+      dot.classList.toggle('selected', currentTeam === team);
+      dot.title = team === 'red' ? 'Équipe rouge' : 'Équipe bleue';
+      dot.disabled = !isOwner;
+      dot.addEventListener('click', () => setMemberTeam(group.id, uid, team));
+      picker.appendChild(dot);
+    });
+    card.appendChild(picker);
+  }
+
   return card;
 }
 
@@ -494,6 +553,7 @@ function renderGroupsList() {
   currentGroups.forEach((group, index) => {
     const li = document.createElement('li');
     li.className = 'group-item';
+    const isOwner = group.ownerId === currentUser.uid;
 
     const title = document.createElement('div');
     title.className = 'group-title';
@@ -504,11 +564,35 @@ function renderGroupsList() {
     if (currentGroups.length > 1 && index === 0) title.textContent += ' — actif';
     li.appendChild(title);
 
+    // Mode de jeu : Solo (par défaut, comme avant) ou Équipes (coéquipiers
+    // increvables entre eux, équipe choisie par le créateur ci-dessous).
+    // Seul le créateur peut le changer — les autres voient juste le mode actif.
+    const modeRow = document.createElement('div');
+    modeRow.className = 'group-mode-row';
+    const modeLabel = document.createElement('span');
+    modeLabel.className = 'group-mode-label';
+    modeLabel.textContent = 'Mode :';
+    modeRow.appendChild(modeLabel);
+    [
+      { id: 'solo', label: 'Solo' },
+      { id: 'team', label: 'Équipes' },
+    ].forEach(({ id, label }) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'mode-button';
+      button.textContent = label;
+      button.classList.toggle('active', (group.mode || 'solo') === id);
+      button.disabled = !isOwner;
+      button.addEventListener('click', () => setGroupMode(group.id, id));
+      modeRow.appendChild(button);
+    });
+    li.appendChild(modeRow);
+
     // Les joueurs du groupe, directement — avatar (skin choisi) + pseudo dessous.
     const membersRow = document.createElement('div');
     membersRow.className = 'group-members-row';
     group.members.forEach((uid) => {
-      membersRow.appendChild(buildMemberCard(uid, group.memberPseudos?.[uid]));
+      membersRow.appendChild(buildMemberCard(uid, group.memberPseudos?.[uid], group, isOwner));
     });
     li.appendChild(membersRow);
 
@@ -548,10 +632,10 @@ function renderGroupsList() {
 
     const leaveButton = document.createElement('button');
     leaveButton.className = 'secondary';
-    leaveButton.textContent = group.ownerId === currentUser.uid ? 'Supprimer' : 'Quitter';
+    leaveButton.textContent = isOwner ? 'Supprimer' : 'Quitter';
     leaveButton.addEventListener('click', () => {
       if (!currentUser) return;
-      if (group.ownerId === currentUser.uid) {
+      if (isOwner) {
         deleteGroup(group.id);
       } else {
         leaveGroup(group.id, currentUser.uid);
