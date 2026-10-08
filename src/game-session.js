@@ -8,16 +8,30 @@
 // ---------------------------------------------------------------------------
 
 let activeGroupId = null;
+let activeMode = 'solo';
+let activeTeam = null;
 
-// Appelé par lobby.js juste avant d'entrer en jeu (bouton "Rejoindre
-// l'arène"). Simplification : un joueur peut appartenir à plusieurs groupes,
-// mais un seul peut servir au matchmaking d'une partie donnée — c'est celui-là
-// qu'on retient.
-export function setActiveGroupId(groupId) {
+// Appelé par lobby.js juste avant d'entrer en jeu (bouton "Jouer"). Un
+// joueur peut appartenir à plusieurs groupes, mais un seul sert à une partie
+// donnée — c'est celui-là qu'on retient.
+//
+// mode/team : résolus par lobby.js à partir du groupe actif — 'team' + une
+// couleur seulement si le créateur du groupe a activé le mode "Équipes" ET
+// déjà assigné CE joueur à une équipe ; sinon 'solo' (équipe auto-équilibrée
+// côté serveur, pas d'immunité aux tirs alliés).
+export function setActiveGroupId(groupId, mode = 'solo', team = null) {
   activeGroupId = groupId || null;
+  activeMode = mode === 'team' && team ? 'team' : 'solo';
+  activeTeam = activeMode === 'team' ? team : null;
 }
 
-// Appelé par main.js (startNetwork) au moment de se connecter au serveur.
+// Appelés par main.js (startNetwork) au moment de se connecter au serveur.
 export function getActiveGroupId() {
   return activeGroupId;
+}
+export function getActiveMode() {
+  return activeMode;
+}
+export function getActiveTeam() {
+  return activeTeam;
 }
