@@ -130,6 +130,7 @@ function updateMenuHelp() {
   menuHelpEl.textContent =
     `${describeMovementKeys(k)} pour bouger, souris pour regarder, clic pour tirer, ` +
     `molette ou ${keyLabel(k.weaponSlot1)}/${keyLabel(k.weaponSlot2)} pour changer d'arme, ` +
+    `${keyLabel(k.pickupWeapon)} pour ramasser une arme au sol, ` +
     `${keyLabel(k.useVest)} pour utiliser un gilet, ${keyLabel(k.shop)} pour la boutique, Échap pour sortir`;
 }
 updateMenuHelp();

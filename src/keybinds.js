@@ -22,6 +22,7 @@ export const KEYBIND_ACTIONS = [
   { id: 'crouch', label: "S'accroupir" },
   { id: 'weaponSlot1', label: 'Arme 1' },
   { id: 'weaponSlot2', label: 'Arme 2' },
+  { id: 'pickupWeapon', label: 'Ramasser une arme au sol' },
   { id: 'useVest', label: 'Utiliser un gilet' },
   { id: 'shop', label: 'Ouvrir/fermer la boutique' },
 ];
@@ -36,6 +37,7 @@ export const DEFAULT_KEYBINDS = {
   crouch: 'KeyC',
   weaponSlot1: 'Digit1',
   weaponSlot2: 'Digit2',
+  pickupWeapon: 'KeyE',
   useVest: 'KeyP',
   shop: 'KeyB',
 };

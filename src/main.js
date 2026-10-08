@@ -12,11 +12,12 @@ import {
   sendShoot,
   sendUseVest,
   sendBuyItem,
+  sendCollectWeapon,
 } from './network.js';
 import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
 import { getAppearance, getEmojiTexture, sanitizeAppearance, DEFAULT_APPEARANCE } from './appearance.js';
-import { getActiveGroupId } from './game-session.js';
-import { getKeybinds } from './keybinds.js';
+import { getActiveGroupId, getActiveMode, getActiveTeam } from './game-session.js';
+import { getKeybinds, keyLabel } from './keybinds.js';
 // Toutes les données de la map qui ne sont pas de la géométrie visuelle pure
 // (boîtes de collision, spawns d'équipe, lumières d'ambiance) — doit rester identique à
 // mini-warzone-server/map-data.json. La géométrie visible, elle, vient de
@@ -340,22 +341,140 @@ const weaponModels = WEAPONS.map((weapon) => {
   return { id: weapon.id, group: model, material, baseColor: new THREE.Color(weapon.color) };
 });
 
-function applyRarityTint(weaponId, rarity) {
-  const entry = weaponModels.find((w) => w.id === weaponId);
-  if (!entry) return;
+// Factorisée pour être réutilisable sur n'importe quel matériau d'arme — en
+// main (weaponModels ci-dessous) ou posée au sol (voir buildWeaponPickupMesh
+// plus bas, pour le stuff qui tombe à la mort d'un joueur).
+function tintMaterialForRarity(material, baseColor, rarity) {
   if (!rarity || rarity === 'gray') {
-    entry.material.color.copy(entry.baseColor);
-    entry.material.emissive.set(0x000000);
+    material.color.copy(baseColor);
+    material.emissive.set(0x000000);
     return;
   }
   const tint = new THREE.Color(rarityColor(rarity));
-  entry.material.color.copy(entry.baseColor).lerp(tint, RARITY_TINT_MIX);
-  entry.material.emissive.copy(tint);
-  entry.material.emissiveIntensity = 0.3;
+  material.color.copy(baseColor).lerp(tint, RARITY_TINT_MIX);
+  material.emissive.copy(tint);
+  material.emissiveIntensity = 0.3;
+}
+
+function applyRarityTint(weaponId, rarity) {
+  const entry = weaponModels.find((w) => w.id === weaponId);
+  if (!entry) return;
+  tintMaterialForRarity(entry.material, entry.baseColor, rarity);
+}
+
+// ---------------------------------------------------------------------------
+// Stuff au sol (voir dropLoot dans server.js) : armes et gilets tombés à la
+// mort d'un joueur. Rien n'est semé sur la carte au hasard — tout vient
+// d'une mort, et un objet reste au sol jusqu'à ce que quelqu'un le ramasse.
+// Les gilets se ramassent tout seuls en marchant dessus (le serveur s'en
+// charge ; côté client, rien à faire à part afficher/retirer leur mesh). Les
+// armes demandent la touche E (configurable, voir keybinds.js) à portée —
+// voir findClosestGroundWeapon et la mise à jour du prompt dans animate().
+// ---------------------------------------------------------------------------
+const groundVestMeshes = new Map(); // vestId -> THREE.Object3D
+const groundWeaponPickups = new Map(); // weaponPickupId -> { mesh, weaponId, position }
+const WEAPON_PICKUP_INTERACT_RADIUS = 1.8; // doit rester proche de WEAPON_PICKUP_RADIUS côté serveur
+
+function buildVestPickupMesh() {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x2f5fa8, roughness: 0.5, metalness: 0.2 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.4, 0.14), mat);
+  body.position.y = 0.3;
+  group.add(body);
+  const strapMat = new THREE.MeshStandardMaterial({ color: 0x1b2b3a, roughness: 0.7 });
+  [-0.1, 0.1].forEach((x) => {
+    const strap = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.42, 0.05), strapMat);
+    strap.position.set(x, 0.3, 0);
+    group.add(strap);
+  });
+  const beacon = new THREE.PointLight(0x6fb3ff, 1.2, 4, 2);
+  beacon.position.y = 0.6;
+  group.add(beacon);
+  return group;
+}
+
+// Réutilise le vrai modèle 3D de l'arme (voir WEAPON_BUILDERS plus haut),
+// couché au sol et teinté selon sa rareté réelle — un fusil rouge tombé au
+// sol a donc l'air d'un fusil rouge, pas d'un ramassage générique.
+function buildWeaponPickupMesh(weaponId, rarity) {
+  const weaponDef = WEAPONS.find((w) => w.id === weaponId) || WEAPONS[0];
+  const { group, material } = WEAPON_BUILDERS[weaponDef.id](weaponDef.color);
+  tintMaterialForRarity(material, new THREE.Color(weaponDef.color), rarity);
+  group.rotation.x = Math.PI / 2; // à plat sur le sol plutôt qu'en position "en main"
+  group.position.y = 0.12;
+
+  const beacon = new THREE.PointLight(
+    rarity && rarity !== 'gray' ? rarityColor(rarity) : 0xffffff,
+    1,
+    3.5,
+    2
+  );
+  beacon.position.y = 0.3;
+
+  const holder = new THREE.Group();
+  holder.add(group, beacon);
+  return holder;
+}
+
+function addGroundVest({ id, position }) {
+  if (groundVestMeshes.has(id)) return;
+  const mesh = buildVestPickupMesh();
+  mesh.position.set(position.x, position.y, position.z);
+  scene.add(mesh);
+  groundVestMeshes.set(id, mesh);
+}
+function removeGroundVest(id) {
+  const mesh = groundVestMeshes.get(id);
+  if (!mesh) return;
+  scene.remove(mesh);
+  groundVestMeshes.delete(id);
+}
+function handleCurrentVests(items) {
+  items.forEach(addGroundVest);
+}
+function handleVestRemoved({ id }) {
+  removeGroundVest(id);
+}
+
+function addGroundWeaponPickup({ id, weaponId, rarity, position }) {
+  if (groundWeaponPickups.has(id)) return;
+  const mesh = buildWeaponPickupMesh(weaponId, rarity);
+  mesh.position.set(position.x, position.y, position.z);
+  scene.add(mesh);
+  groundWeaponPickups.set(id, { mesh, weaponId, position });
+}
+function removeGroundWeaponPickup(id) {
+  const entry = groundWeaponPickups.get(id);
+  if (!entry) return;
+  scene.remove(entry.mesh);
+  groundWeaponPickups.delete(id);
+}
+function handleCurrentWeaponPickups(items) {
+  items.forEach(addGroundWeaponPickup);
+}
+function handleWeaponPickupRemoved({ id }) {
+  removeGroundWeaponPickup(id);
+}
+
+// Arme au sol la plus proche à portée de ramassage (touche E), ou null.
+function findClosestGroundWeapon() {
+  let closestId = null;
+  let closestDist = WEAPON_PICKUP_INTERACT_RADIUS;
+  groundWeaponPickups.forEach(({ position }, id) => {
+    const dx = camera.position.x - position.x;
+    const dy = camera.position.y - position.y;
+    const dz = camera.position.z - position.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist < closestDist) {
+      closestDist = dist;
+      closestId = id;
+    }
+  });
+  return closestId;
 }
 
 // currentWeaponIndex reste l'index dans WEAPONS/weaponModels du modèle
-// affiché ; currentSlot (déclaré plus loin, 0/1/2) est ce que l'UI et les
+// affiché ; currentSlot (déclaré plus loin, 0/1) est ce que l'UI et les
 // entrées clavier/souris utilisent pour savoir quel slot du stuff est actif.
 let currentWeaponIndex = 0;
 weaponModels[currentWeaponIndex].group.visible = true;
@@ -496,6 +615,7 @@ const invSlotEls = [
   document.getElementById('slot-weapon2'),
 ];
 const vestStockEl = document.getElementById('vest-stock');
+const pickupPromptEl = document.getElementById('pickup-prompt');
 
 function updateHealthUI(hp) {
   const clamped = Math.max(0, Math.min(MAX_HP, hp));
@@ -799,6 +919,15 @@ document.addEventListener('keydown', (e) => {
   if (myVestCount > 0) sendUseVest();
 });
 
+// Ramasse l'arme au sol la plus proche (si une est à portée) et la met dans
+// le slot sélectionné si le stuff est plein, ou dans le slot vide sinon —
+// voir la logique côté serveur ('collect-weapon' dans server.js).
+document.addEventListener('keydown', (e) => {
+  if (e.code !== keybinds.pickupWeapon || isDead || isShopOpen() || !networkStarted) return;
+  const closestId = findClosestGroundWeapon();
+  if (closestId) sendCollectWeapon(closestId, currentSlot);
+});
+
 // ---------------------------------------------------------------------------
 // Boutique (voir shop.js)
 // ---------------------------------------------------------------------------
@@ -1025,7 +1154,7 @@ function startNetwork() {
   const pseudo = auth.currentUser?.displayName || 'Joueur';
   const groupId = getActiveGroupId();
 
-  connectToServer(pseudo, getAppearance(), groupId, {
+  connectToServer(pseudo, getAppearance(), groupId, getActiveMode(), getActiveTeam(), {
     onTeamAssigned: handleTeamAssigned,
     onPlayerJoined: addOtherPlayer,
     onPlayerMoved: updateOtherPlayer,
@@ -1052,6 +1181,12 @@ function startNetwork() {
     onYourVestCount: handleVestCountUpdate,
     onYourWeapons: handleWeaponsUpdate,
     onYourAbilities: handleAbilitiesUpdate,
+    onCurrentVests: handleCurrentVests,
+    onVestSpawned: addGroundVest,
+    onVestRemoved: handleVestRemoved,
+    onCurrentWeaponPickups: handleCurrentWeaponPickups,
+    onWeaponPickupSpawned: addGroundWeaponPickup,
+    onWeaponPickupRemoved: handleWeaponPickupRemoved,
   });
 }
 
@@ -1060,7 +1195,7 @@ function startNetwork() {
 // ---------------------------------------------------------------------------
 const clock = new THREE.Clock();
 let timeSinceLastMoveSent = 0;
-const MOVE_SEND_INTERVAL = 0.05; // ~20 envois par seconde, pas à chaque frame
+const MOVE_SEND_INTERVAL = 0.033; // ~30 envois par seconde (au lieu de 20) — voir HIT_REWIND_MS côté serveur
 let bobTime = 0;
 
 function animate() {
@@ -1148,10 +1283,19 @@ function animate() {
   weaponGroup.position.z += recoilKick * 0.06;
 
   // Autres joueurs : on lisse leur déplacement plutôt que de les téléporter
-  // à chaque message reçu du serveur (ça "saccaderait" sinon).
+  // à chaque message reçu du serveur (ça "saccaderait" sinon) — mais pas
+  // trop lentement non plus : plus ce lissage traîne, plus on les VOIT en
+  // retard sur leur vraie position, ce qui fait viser (et donc tirer) un peu
+  // derrière une cible qui bouge vite. Facteur dépendant de delta (comme le
+  // recul de l'arme un peu plus haut) plutôt qu'un taux fixe par frame, pour
+  // rattraper la cible en un temps à peu près constant quel que soit le
+  // framerate. Le serveur compense malgré tout le retard réseau restant côté
+  // tir (voir HIT_REWIND_MS dans server.js) — ce réglage-ci ne joue que sur
+  // le confort visuel, pas sur l'équité des tirs.
   otherPlayers.forEach(({ mesh, targetPosition, targetRotationY }) => {
-    mesh.position.lerp(targetPosition, 0.25);
-    mesh.rotation.y += (targetRotationY - mesh.rotation.y) * 0.25;
+    const followFactor = Math.min(1, 25 * delta);
+    mesh.position.lerp(targetPosition, followFactor);
+    mesh.rotation.y += (targetRotationY - mesh.rotation.y) * followFactor;
   });
 
   // Position locale envoyée au serveur, mais pas à chaque frame (inutile et
@@ -1163,6 +1307,19 @@ function animate() {
       timeSinceLastMoveSent = 0;
       const facing = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
       sendMove({ x: camera.position.x, y: camera.position.y, z: camera.position.z }, facing.y);
+    }
+  }
+
+  // Prompt "E — Ramasser [arme]" : visible seulement à portée d'une arme au
+  // sol, mort et boutique ouverte exclues (comme pour la boutique).
+  if (pickupPromptEl) {
+    const nearbyId = !isDead && !isShopOpen() ? findClosestGroundWeapon() : null;
+    if (nearbyId) {
+      const entry = groundWeaponPickups.get(nearbyId);
+      pickupPromptEl.textContent = `${keyLabel(keybinds.pickupWeapon)} — Ramasser ${weaponLabel(entry.weaponId)}`;
+      pickupPromptEl.style.display = 'block';
+    } else {
+      pickupPromptEl.style.display = 'none';
     }
   }
 
