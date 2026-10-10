@@ -4,6 +4,7 @@
 // Le lobby est organisé en catégories (colonne grisée à gauche) :
 //   Accueil    — ton perso (ou celui de tout ton groupe) + gros bouton Jouer
 //   Amis       — recherche/demandes/liste d'amis + création et gestion des groupes
+//   Messages   — messages privés entre amis + chat de groupe (voir messages.js)
 //   Apparence  — choix du skin
 //   Paramètres — touches personnalisables (voir keybinds.js)
 //   Compte     — pseudo, email, déconnexion
@@ -38,6 +39,13 @@ import {
 import { saveMyAppearance, listenUserAppearance } from './profiles.js';
 import { initKeybindsPicker, getKeybinds, keyLabel, describeMovementKeys } from './keybinds.js';
 import { setActiveGroupId } from './game-session.js';
+import {
+  initMessaging,
+  setMessagingUser,
+  setMessagingFriends,
+  setMessagingGroups,
+  setMessagesTabVisible,
+} from './messages.js';
 
 // --- Éléments DOM ------------------------------------------------------------
 const authScreen = document.getElementById('auth-screen');
@@ -52,6 +60,7 @@ const authError = document.getElementById('auth-error');
 
 const navItems = Array.from(document.querySelectorAll('.lobby-nav-item'));
 const friendsBadge = document.getElementById('friends-badge');
+const messagesBadge = document.getElementById('messages-badge');
 const lobbyError = document.getElementById('lobby-error');
 
 const homePartyEl = document.getElementById('home-party');
@@ -104,7 +113,16 @@ initAppearancePicker({
   },
 });
 
+// Pastille sur "Messages" : nombre de conversations avec un message non lu.
+initMessaging({
+  onUnreadChange: (count) => {
+    messagesBadge.hidden = count === 0;
+    messagesBadge.textContent = String(count);
+  },
+});
+
 function clearSubscriptions() {
+  setMessagingUser(null);
   unsubscribers.forEach((unsub) => unsub());
   unsubscribers = [];
   memberAppearanceUnsubs.forEach((unsub) => unsub());
@@ -169,6 +187,7 @@ function showTab(name) {
     section.hidden = section.id !== `lobby-tab-${name}`;
   });
   lobbyError.textContent = '';
+  setMessagesTabVisible(name === 'messages');
 }
 
 navItems.forEach((item) => {
@@ -424,6 +443,7 @@ function renderIncomingRequests(requests) {
 function renderFriends(friends) {
   if (!currentUser) return;
   currentFriends = friends;
+  setMessagingFriends(friends);
   friendsList.innerHTML = '';
   if (friends.length === 0) {
     friendsList.appendChild(emptyItem("Pas encore d'amis ajoutés."));
@@ -652,6 +672,7 @@ function renderGroupsList() {
 function renderGroups(groups) {
   if (!currentUser) return;
   currentGroups = groups;
+  setMessagingGroups(groups);
   renderGroupsList();
   syncMemberAppearanceListeners();
   renderHomeParty();
@@ -670,6 +691,7 @@ onAuthChange((user) => {
   lobbyPseudoEl.textContent = user.displayName || user.email;
   lobbyEmailEl.textContent = user.email || '';
   showLobbyScreen();
+  setMessagingUser({ uid: user.uid, pseudo: user.displayName || user.email });
   renderHomeParty(); // ton perso s'affiche tout de suite, sans attendre les groupes
 
   // Republie le skin de cet appareil dans ton profil public : c'est ce que

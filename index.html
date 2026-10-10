@@ -580,6 +580,87 @@
       .play-button-big { min-width: 0; width: 100%; }
     }
 
+    /* Messagerie */
+    .messages-layout {
+      display: flex;
+      gap: 16px;
+      height: min(580px, calc(100vh - 140px));
+      min-height: 360px;
+    }
+    .messages-list-col { width: 250px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; }
+    .messages-list-col h2 { font-size: 1.05rem; margin: 0 0 10px; }
+    .conversation-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .conversation-list li.muted { opacity: 0.5; font-size: 0.85rem; padding: 6px 4px; }
+    .conversation-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 9px 10px;
+      background: rgba(255, 255, 255, 0.05);
+      color: white;
+      border-left: 3px solid transparent;
+      border-radius: 8px;
+      text-align: left;
+    }
+    .conversation-item:hover { background: rgba(255, 255, 255, 0.09); }
+    .conversation-item.active { background: rgba(255, 255, 255, 0.13); border-left-color: #e63946; }
+    .conversation-icon { width: 1.4em; text-align: center; flex-shrink: 0; }
+    .conversation-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .conversation-title { font-weight: 600; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conversation-preview { font-size: 0.75rem; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conversation-unread-dot { width: 10px; height: 10px; border-radius: 50%; background: #e63946; flex-shrink: 0; }
+    .conversation-unread-dot[hidden] { display: none; }
+    .messages-thread-col {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: rgba(0, 0, 0, 0.22);
+      border-radius: 10px;
+    }
+    .thread-header { padding: 12px 14px; font-weight: 600; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+    .thread-messages {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .thread-empty { margin: auto; opacity: 0.5; font-size: 0.9rem; text-align: center; }
+    .message {
+      max-width: 78%;
+      align-self: flex-start;
+      padding: 8px 12px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.1);
+      overflow-wrap: anywhere;
+    }
+    .message.mine { align-self: flex-end; background: rgba(230, 57, 70, 0.35); }
+    .message-author { font-size: 0.72rem; font-weight: 600; opacity: 0.7; margin-bottom: 2px; }
+    .message-text { font-size: 0.92rem; white-space: pre-wrap; }
+    .message-time { font-size: 0.66rem; opacity: 0.5; margin-top: 2px; text-align: right; }
+    .thread-error { padding: 0 14px; font-size: 0.8rem; color: #ff8a8a; }
+    .thread-error:empty { display: none; }
+    .thread-form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+    .thread-form[hidden] { display: none; }
+    .thread-form input { flex: 1; min-width: 0; }
+    @media (max-width: 720px) {
+      .messages-layout { flex-direction: column; height: calc(100vh - 150px); }
+      .messages-list-col { width: auto; max-height: 150px; }
+    }
+
     /* Apparence : aperçu du perso + réglages */
     .appearance-row { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
     .appearance-preview {
@@ -909,6 +990,7 @@
       <nav class="lobby-nav">
         <button type="button" class="lobby-nav-item active" data-tab="home"><span class="nav-icon">🏠</span>Accueil</button>
         <button type="button" class="lobby-nav-item" data-tab="friends"><span class="nav-icon">👥</span>Amis<span id="friends-badge" class="nav-badge" hidden></span></button>
+        <button type="button" class="lobby-nav-item" data-tab="messages"><span class="nav-icon">💬</span>Messages<span id="messages-badge" class="nav-badge" hidden></span></button>
         <button type="button" class="lobby-nav-item" data-tab="appearance"><span class="nav-icon">🎨</span>Apparence</button>
         <button type="button" class="lobby-nav-item" data-tab="settings"><span class="nav-icon">⌨️</span>Paramètres</button>
         <button type="button" class="lobby-nav-item" data-tab="account"><span class="nav-icon">⚙️</span>Compte</button>
@@ -958,6 +1040,25 @@
       </section>
 
       <!-- Apparence -->
+      <!-- Messages : messages privés entre amis + chat de groupe (voir messages.js) -->
+      <section id="lobby-tab-messages" class="lobby-tab" hidden>
+        <div class="messages-layout">
+          <div class="messages-list-col">
+            <h2>Messages</h2>
+            <ul id="conversation-list" class="conversation-list"></ul>
+          </div>
+          <div class="messages-thread-col">
+            <div id="thread-header" class="thread-header">Choisis une conversation</div>
+            <div id="thread-messages" class="thread-messages"></div>
+            <div id="thread-error" class="thread-error"></div>
+            <form id="thread-form" class="thread-form" hidden>
+              <input id="thread-input" type="text" maxlength="500" placeholder="Écrire un message…" autocomplete="off" />
+              <button type="submit">Envoyer</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
       <section id="lobby-tab-appearance" class="lobby-tab" hidden>
         <div class="lobby-section">
           <h2>Apparence</h2>

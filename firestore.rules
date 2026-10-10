@@ -1,7 +1,7 @@
 rules_version = '2';
 
 // ---------------------------------------------------------------------------
-// Règles Firestore — V1 (comptes + amis + groupes)
+// Règles Firestore — V1 (comptes + amis + groupes + messagerie)
 // ---------------------------------------------------------------------------
 // À copier-coller dans Firebase Console > Firestore Database > Règles
 // (ou via `firebase deploy --only firestore:rules` si tu utilises la CLI).
@@ -14,6 +14,18 @@ rules_version = '2';
 // déclenché sur l'acceptation d'une demande (nécessite le plan Blaze).
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // Un message valide : écrit par son auteur, 1 à 500 caractères (même
+    // limite que MAX_LENGTH dans src/messages.js), horodaté par le serveur,
+    // et rien d'autre dedans.
+    function validMessage() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['fromUid', 'fromPseudo', 'text', 'createdAt']) &&
+        d.fromUid == request.auth.uid &&
+        d.fromPseudo is string && d.fromPseudo.size() <= 40 &&
+        d.text is string && d.text.size() >= 1 && d.text.size() <= 500 &&
+        d.createdAt == request.time;
+    }
 
     // Profil public minimal (pseudo) — lisible par tout compte connecté
     // pour permettre la recherche d'amis par pseudo.
@@ -81,6 +93,33 @@ service cloud.firestore {
 
       allow delete: if request.auth != null &&
         (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid);
+    }
+
+    // Messagerie — messages privés entre amis. {dmId} est l'id du doc
+    // friendships (uids triés, voir friends.js) : seuls les deux amis lisent
+    // et écrivent, et plus personne dès que l'amitié est supprimée. Un
+    // message ne se modifie ni ne se supprime.
+    match /dms/{dmId}/messages/{messageId} {
+      allow read: if request.auth != null &&
+        request.auth.uid in get(/databases/$(database)/documents/friendships/$(dmId)).data.users;
+
+      allow create: if request.auth != null &&
+        request.auth.uid in get(/databases/$(database)/documents/friendships/$(dmId)).data.users &&
+        validMessage();
+
+      allow update, delete: if false;
+    }
+
+    // Messagerie — chat de groupe : réservé aux membres actuels du groupe.
+    match /groupChats/{groupId}/messages/{messageId} {
+      allow read: if request.auth != null &&
+        request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.members;
+
+      allow create: if request.auth != null &&
+        request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.members &&
+        validMessage();
+
+      allow update, delete: if false;
     }
   }
 }
