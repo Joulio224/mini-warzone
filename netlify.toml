@@ -1,0 +1,13 @@
+# Réglages de déploiement Netlify.
+#
+# Ils vivent dans le dépôt (et pas seulement dans l'interface Netlify) pour que
+# n'importe quel site créé depuis ce dépôt — y compris sur un autre compte —
+# construise le jeu correctement. Sans ça, Netlify publie les fichiers sources
+# tels quels : le navigateur ne sait pas résoudre `import ... from 'three'`
+# ou 'firebase/auth', et le lobby reste inerte.
+#
+# Les variables VITE_* (Firebase + serveur temps réel) se renseignent, elles,
+# dans l'interface : Project configuration > Environment variables.
+[build]
+  command = "npm run build"
+  publish = "dist"

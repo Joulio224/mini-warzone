@@ -69,9 +69,24 @@ navigation privée) et ajoute-toi toi-même en ami depuis l'autre compte.
 npm run build
 ```
 
-Le résultat est généré dans `dist/`. **N'oublie pas** de configurer les
-mêmes variables d'environnement (`VITE_FIREBASE_*`) dans les paramètres de
-build de Netlify, sinon Firebase ne s'initialisera pas en prod.
+Le résultat est généré dans `dist/`. Sur Netlify, le fichier `netlify.toml`
+règle déjà la commande de build (`npm run build`) et le dossier publié
+(`dist`) : rien à saisir pour ça dans l'interface. Sans build, Netlify publie
+les fichiers sources bruts et la page reste inerte (erreurs « Failed to
+resolve module specifier "three" » dans la console).
+
+**N'oublie pas** de configurer les variables d'environnement dans
+Netlify (Project configuration > Environment variables), puis de relancer un
+déploiement — elles ne sont lues qu'au moment du build :
+
+- les six `VITE_FIREBASE_*` (voir `.env.example`) ;
+- `VITE_REALTIME_SERVER_URL` : l'URL publique du serveur temps réel
+  (`mini-warzone-server`), sinon le lobby marche mais pas la partie.
+
+Ne coche **pas** « Contains secret values » sur ces variables : Vite les
+écrit dans le JavaScript envoyé au navigateur (les clés Firebase web sont
+publiques par conception, c'est `firestore.rules` qui protège les données), et
+Netlify ferait échouer le build en les retrouvant dans le résultat.
 
 ## Structure du code
 
