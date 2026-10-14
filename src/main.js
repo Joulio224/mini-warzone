@@ -1050,10 +1050,10 @@ const EYE_HEIGHT = STAND_EYE_HEIGHT; // référence utilisée pour repositionner
 
 const otherPlayers = new Map(); // socket id -> { mesh, targetPosition, targetRotationY }
 
-// La couleur du corps est maintenant 100% libre (choisie par le joueur, voir
-// appearance.js) — ce n'est donc plus elle qui indique l'équipe. À la place,
-// une petite pastille colorée flotte au-dessus de la tête, toujours dans la
-// couleur de l'équipe, quel que soit le skin choisi.
+// En mode équipes, la couleur du corps indique l'équipe.
+// En solo, le joueur retrouve sa couleur personnelle sauvegardée dans appearance
+// (et dans Firestore via profiles.js). Cette couleur personnelle n'est jamais
+// remplacée par la couleur temporaire de l'équipe.
 const TEAM_MARKER_COLORS = { red: 0xe63946, blue: 0x3a86ff };
 // Facteur de luminosité du corps selon le nombre de gilets portés (0 à 3) —
 // chaque gilet assombrit un peu plus, jusqu'à très sombre à 3 gilets.
@@ -1064,12 +1064,15 @@ function getTintedBodyColor(baseColor, steps) {
   return new THREE.Color(baseColor).multiplyScalar(factor);
 }
 
-function createPlayerMesh(team, steps = 0, appearance = DEFAULT_APPEARANCE) {
+function createPlayerMesh(team, steps = 0, appearance = DEFAULT_APPEARANCE, mode = 'solo') {
   const group = new THREE.Group();
+  const bodyColor = mode === 'team'
+    ? (TEAM_MARKER_COLORS[team] ?? TEAM_MARKER_COLORS.red)
+    : appearance.bodyColor;
 
   const body = new THREE.Mesh(
     new THREE.CapsuleGeometry(0.35, 1.1, 4, 8),
-    new THREE.MeshStandardMaterial({ color: getTintedBodyColor(appearance.bodyColor, steps) })
+    new THREE.MeshStandardMaterial({ color: getTintedBodyColor(bodyColor, steps) })
   );
   body.position.y = 0.9;
   body.castShadow = true;
@@ -1110,10 +1113,13 @@ function createPlayerMesh(team, steps = 0, appearance = DEFAULT_APPEARANCE) {
   return { group, bodyMaterial: body.material };
 }
 
-function addOtherPlayer({ id, position, rotationY, team, shieldSteps, appearance }) {
+function addOtherPlayer({ id, position, rotationY, team, mode = 'solo', shieldSteps, appearance }) {
   if (otherPlayers.has(id)) return;
   const safeAppearance = sanitizeAppearance(appearance);
-  const { group: mesh, bodyMaterial } = createPlayerMesh(team, shieldSteps || 0, safeAppearance);
+  const bodyColor = mode === 'team'
+    ? (TEAM_MARKER_COLORS[team] ?? TEAM_MARKER_COLORS.red)
+    : safeAppearance.bodyColor;
+  const { group: mesh, bodyMaterial } = createPlayerMesh(team, shieldSteps || 0, safeAppearance, mode);
   if (position) {
     mesh.position.set(position.x, position.y - EYE_HEIGHT, position.z);
   }
@@ -1123,7 +1129,8 @@ function addOtherPlayer({ id, position, rotationY, team, shieldSteps, appearance
     mesh,
     bodyMaterial,
     team,
-    bodyColor: safeAppearance.bodyColor,
+    mode,
+    bodyColor,
     targetPosition: mesh.position.clone(),
     targetRotationY: mesh.rotation.y,
   });
