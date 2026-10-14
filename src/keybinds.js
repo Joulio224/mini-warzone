@@ -25,6 +25,7 @@ export const KEYBIND_ACTIONS = [
   { id: 'pickupWeapon', label: 'Ramasser une arme au sol' },
   { id: 'useVest', label: 'Utiliser un gilet' },
   { id: 'shop', label: 'Ouvrir/fermer la boutique' },
+  { id: 'scoreboard', label: 'Afficher le tableau des scores (maintenir)' },
 ];
 const ACTION_IDS = new Set(KEYBIND_ACTIONS.map((a) => a.id));
 
@@ -40,6 +41,7 @@ export const DEFAULT_KEYBINDS = {
   pickupWeapon: 'KeyE',
   useVest: 'KeyP',
   shop: 'KeyB',
+  scoreboard: 'Tab',
 };
 
 // Échap est réservé par le navigateur (sortie du pointer lock) : jamais

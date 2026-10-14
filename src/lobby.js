@@ -39,6 +39,8 @@ import {
 import { saveMyAppearance, listenUserAppearance } from './profiles.js';
 import { initKeybindsPicker, getKeybinds, keyLabel, describeMovementKeys } from './keybinds.js';
 import { setActiveGroupId } from './game-session.js';
+import { initSettingsPicker } from './settings.js';
+import { audio } from './audio.js';
 import {
   initMessaging,
   setMessagingUser,
@@ -149,10 +151,24 @@ function updateMenuHelp() {
     `${describeMovementKeys(k)} pour bouger, souris pour regarder, clic pour tirer, ` +
     `molette ou ${keyLabel(k.weaponSlot1)}/${keyLabel(k.weaponSlot2)} pour changer d'arme, ` +
     `${keyLabel(k.pickupWeapon)} pour ramasser une arme au sol, ` +
-    `${keyLabel(k.useVest)} pour utiliser un gilet, ${keyLabel(k.shop)} pour la boutique, Échap pour sortir`;
+    `${keyLabel(k.useVest)} pour utiliser un gilet, ${keyLabel(k.shop)} pour la boutique, ` +
+    `${keyLabel(k.scoreboard)} (maintenu) pour les scores, Échap pour sortir`;
 }
 updateMenuHelp();
 initKeybindsPicker({ onChange: updateMenuHelp });
+
+// Réglages de jeu (sensibilité, champ de vision, volume, bloom) — voir
+// settings.js. Au relâchement du curseur de volume on joue un tir d'essai,
+// pour pouvoir régler le son sans lancer une partie : le geste de
+// l'utilisateur (le clic sur le curseur) suffit à débloquer l'audio du
+// navigateur.
+initSettingsPicker({
+  onVolumeCommit: (settings) => {
+    audio.unlock();
+    audio.setVolume(settings.volume);
+    audio.playShot('pistol');
+  },
+});
 
 function showAuthScreen() {
   authScreen.hidden = false;

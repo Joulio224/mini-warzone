@@ -73,6 +73,73 @@
       pointer-events: none;
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
     }
+    /* Kill feed : en haut à droite, les plus récents en bas ; chaque ligne
+       s'estompe puis disparaît toute seule (voir scoreboard.js) */
+    #kill-feed {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 6;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
+      pointer-events: none;
+      font-family: system-ui, sans-serif;
+    }
+    .feed-entry {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      background: rgba(0, 0, 0, 0.55);
+      color: white;
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+      transition: opacity 0.5s ease;
+    }
+    .feed-entry.mine { border-color: rgba(255, 210, 63, 0.8); }
+    .feed-entry.died { border-color: rgba(230, 57, 70, 0.8); }
+    .feed-entry.fade { opacity: 0; }
+    .feed-weapon { opacity: 0.85; font-weight: 500; }
+    .sb-team-red { color: #ff7a85; }
+    .sb-team-blue { color: #7dbdff; }
+
+    /* Tableau des scores : affiché tant que la touche est maintenue */
+    #scoreboard {
+      position: fixed;
+      inset: 0;
+      z-index: 8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      font-family: system-ui, sans-serif;
+    }
+    #scoreboard[hidden] { display: none; }
+    .sb-card {
+      min-width: 380px;
+      max-width: 90vw;
+      max-height: 80vh;
+      overflow: hidden;
+      padding: 16px 20px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(10, 12, 18, 0.85);
+      color: white;
+    }
+    .sb-title { margin: 0 0 10px; font-size: 1rem; letter-spacing: 1px; text-transform: uppercase; opacity: 0.8; }
+    .sb-teams { display: flex; justify-content: center; gap: 14px; margin-bottom: 10px; font-weight: 800; font-size: 1.05rem; }
+    .sb-team-sep { opacity: 0.4; }
+    .sb-table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+    .sb-table th { text-align: left; padding: 4px 8px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; opacity: 0.55; }
+    .sb-table td { padding: 6px 8px; border-top: 1px solid rgba(255, 255, 255, 0.07); }
+    .sb-table .sb-num { text-align: right; width: 64px; font-variant-numeric: tabular-nums; }
+    .sb-table tr.mine td { background: rgba(255, 210, 63, 0.14); font-weight: 700; }
+    .sb-dot { display: inline-block; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: currentColor; }
     #crosshair {
       position: fixed;
       top: 50%;
@@ -811,6 +878,22 @@
     .account-info dt { opacity: 0.6; }
     .account-info dd { margin: 0; font-weight: 600; word-break: break-all; }
     .keybind-list { margin: 0 0 16px; display: flex; flex-direction: column; gap: 8px; }
+    .setting-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      font-size: 0.9rem;
+    }
+    .setting-control { display: flex; align-items: center; gap: 12px; }
+    .setting-value { min-width: 60px; text-align: right; font-weight: 700; }
+    /* Les styles génériques d'input (champ de texte) déformeraient curseurs et cases à cocher */
+    .setting-row input[type="range"] { width: 200px; padding: 0; border: none; background: transparent; accent-color: #e63946; }
+    .setting-row input[type="checkbox"] { width: 20px; height: 20px; padding: 0; accent-color: #e63946; }
+    .settings-gap { margin-top: 24px; }
     .keybind-row {
       display: flex;
       justify-content: space-between;
@@ -912,6 +995,8 @@
 <body>
   <div id="loading">Chargement de la map…</div>
   <div id="pickup-prompt"></div>
+  <div id="kill-feed"></div>
+  <div id="scoreboard" hidden></div>
   <div id="crosshair"></div>
   <div id="damage-flash"></div>
 
@@ -1075,11 +1160,14 @@
         </div>
       </section>
 
-      <!-- Paramètres : touches personnalisables (voir keybinds.js) -->
+      <!-- Paramètres : réglages de jeu (voir settings.js) et touches personnalisables (voir keybinds.js) -->
       <section id="lobby-tab-settings" class="lobby-tab" hidden>
         <div class="lobby-section">
           <h2>Paramètres</h2>
-          <h3>Touches</h3>
+          <h3>Jeu</h3>
+          <div id="settings-list" class="keybind-list"></div>
+          <button id="settings-reset" type="button" class="secondary">Réinitialiser les réglages</button>
+          <h3 class="settings-gap">Touches</h3>
           <div id="keybind-list" class="keybind-list"></div>
           <button id="keybind-reset" type="button" class="secondary">Réinitialiser les touches</button>
           <p id="keybind-error" class="error"></p>

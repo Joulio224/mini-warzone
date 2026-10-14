@@ -23,6 +23,7 @@ let socket = null;
 //   onYourAbilities,
 //   onCurrentVests, onVestSpawned, onVestRemoved,
 //   onCurrentWeaponPickups, onWeaponPickupSpawned, onWeaponPickupRemoved,
+//   onKillFeed, onScoreboard,
 // }
 // groupId : identifiant du groupe Firestore actif (voir game-session.js), ou
 // null. Permet au serveur de mettre les membres d'un même groupe dans la
@@ -135,6 +136,16 @@ export function connectToServer(pseudo, appearance, groupId, mode, team, handler
     handlers.onWeaponPickupRemoved?.(data);
   });
 
+  // Kill feed (une élimination vient d'avoir lieu) et tableau des scores
+  // complet (rediffusé à chaque mort, arrivée ou départ) — voir
+  // scoreboard.js et mini-warzone-server/server.js.
+  socket.on('kill-feed', (data) => {
+    handlers.onKillFeed?.(data);
+  });
+  socket.on('scoreboard', (list) => {
+    handlers.onScoreboard?.(list);
+  });
+
   socket.on('connect_error', (error) => {
     console.error('[network] Connexion au serveur temps réel impossible :', error.message);
     handlers.onConnectError?.(error);
@@ -176,6 +187,12 @@ export function sendCollectWeapon(pickupId, slot) {
 export function sendBuyItem(itemId) {
   if (!socket?.connected) return;
   socket.emit('buy-item', { itemId });
+}
+
+// Identifiant de CE joueur côté serveur : sert à reconnaître « moi » dans le
+// kill feed et le tableau des scores.
+export function getMyId() {
+  return socket?.id ?? null;
 }
 
 export function isConnected() {

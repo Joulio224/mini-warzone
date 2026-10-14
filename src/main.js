@@ -13,11 +13,15 @@ import {
   sendUseVest,
   sendBuyItem,
   sendCollectWeapon,
+  getMyId,
 } from './network.js';
 import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
 import { getAppearance, getEmojiTexture, sanitizeAppearance, DEFAULT_APPEARANCE } from './appearance.js';
 import { getActiveGroupId, getActiveMode, getActiveTeam } from './game-session.js';
 import { getKeybinds, keyLabel } from './keybinds.js';
+import { getSettings } from './settings.js';
+import { audio } from './audio.js';
+import { createScoreboard } from './scoreboard.js';
 // Toutes les données de la map qui ne sont pas de la géométrie visuelle pure
 // (boîtes de collision, spawns d'équipe, lumières d'ambiance) — doit rester identique à
 // mini-warzone-server/map-data.json. La géométrie visible, elle, vient de
@@ -70,8 +74,12 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   1000
 );
-const BASE_FOV = 75;
-const AIM_FOV = 50;
+// Champ de vision réglable dans Paramètres (voir applySettings plus bas) : BASE_FOV
+// est donc modifiable, et le zoom de visée en garde la même proportion que
+// dans le jeu d'origine (50° de visée pour 75° normal).
+const AIM_FOV_RATIO = 50 / 75;
+let BASE_FOV = 75;
+let AIM_FOV = 50;
 camera.position.set(0, 1.7, 5); // 1.7 ~ hauteur d'yeux debout
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -224,10 +232,33 @@ mapLoader.load(
 const controls = new PointerLockControls(camera, renderer.domElement);
 scene.add(controls.getObject());
 
+// Réglages de jeu (voir settings.js et l'onglet Paramètres du lobby) : lus une
+// première fois ici, puis relus à chaque nouvelle partie dans startNetwork().
+// Ne touche volontairement à aucune variable déclarée plus bas (isAiming...) :
+// cette fonction est appelée dès le chargement du fichier.
+function applySettings() {
+  const settings = getSettings();
+  controls.pointerSpeed = settings.sensitivity;
+  BASE_FOV = settings.fov;
+  AIM_FOV = settings.fov * AIM_FOV_RATIO;
+  camera.fov = BASE_FOV; // la boucle animate() réajuste ensuite vers le zoom si on vise
+  camera.updateProjectionMatrix();
+  bloomPass.enabled = settings.bloom;
+  audio.setVolume(settings.volume);
+}
+applySettings();
+
+// Les navigateurs interdisent de lancer du son sans geste de l'utilisateur :
+// le premier clic ou la première touche débloque l'audio (voir audio.js).
+['pointerdown', 'keydown'].forEach((type) => {
+  document.addEventListener(type, () => audio.unlock(), { once: true });
+});
+
 const menuEl = document.getElementById('menu');
 const quitButton = document.getElementById('quit-button');
 
 playButton.addEventListener('click', () => {
+  audio.unlock();
   controls.lock();
   startNetwork();
 });
@@ -516,13 +547,15 @@ function refreshEquippedWeaponDisplay() {
 // Sélectionne un slot d'arme (0 ou 1). Pour un slot vide (pas encore
 // ramassé) ou en pleine mort, on ignore — on ne peut pas "sélectionner" une
 // arme qu'on n'a pas.
-function selectSlot(slot) {
+function selectSlot(slot, { silent = false } = {}) {
   if (isDead || slot < 0 || slot > 1) return;
   if (!myWeapons[slot]) return; // rien dans ce slot
 
+  const changed = slot !== currentSlot;
   currentSlot = slot;
   refreshEquippedWeaponDisplay();
   updateInventoryUI();
+  if (changed && !silent && networkStarted) audio.playSwitchWeapon();
 }
 document.addEventListener('keydown', (e) => {
   if (isShopOpen()) return; // pas de changement d'arme "à l'aveugle" pendant qu'on regarde la boutique
@@ -617,6 +650,26 @@ const invSlotEls = [
 const vestStockEl = document.getElementById('vest-stock');
 const pickupPromptEl = document.getElementById('pickup-prompt');
 
+// Kill feed (en haut à droite) et tableau des scores (touche maintenue) —
+// voir scoreboard.js ; les données viennent du serveur.
+const scoreboard = createScoreboard({
+  feedEl: document.getElementById('kill-feed'),
+  boardEl: document.getElementById('scoreboard'),
+  getMyId,
+  weaponName: (id) => weaponLabel(id),
+  rarityColor,
+});
+document.addEventListener('keydown', (e) => {
+  if (e.code !== keybinds.scoreboard || !networkStarted) return;
+  e.preventDefault(); // sinon Tab déplace le focus du navigateur
+  if (!e.repeat) scoreboard.show();
+});
+document.addEventListener('keyup', (e) => {
+  if (e.code === keybinds.scoreboard) scoreboard.hide();
+});
+// Si la fenêtre perd le focus touche enfoncée (Alt+Tab...), le keyup n'arrive jamais
+window.addEventListener('blur', () => scoreboard.hide());
+
 function updateHealthUI(hp) {
   const clamped = Math.max(0, Math.min(MAX_HP, hp));
   healthFillEl.style.width = `${clamped}%`;
@@ -687,8 +740,18 @@ function updateVestStockUI() {
 }
 updateInventoryUI();
 
+// Instant du dernier clic sur « Acheter » : sert à ne pas jouer le bruit de
+// ramassage par-dessus le bruit d'achat quand le stuff change à cause d'un achat.
+let lastBuyClickAt = -Infinity;
+const isRecentBuy = () => performance.now() - lastBuyClickAt < 800;
+
 function handleWeaponsUpdate(weapons) {
+  const previousWeapons = myWeapons;
   myWeapons = weapons;
+  const gainedWeapon = weapons.some(
+    (w, i) => w && (!previousWeapons[i] || previousWeapons[i].id !== w.id || previousWeapons[i].rarity !== w.rarity)
+  );
+  if (gainedWeapon && !isRecentBuy()) audio.playWeaponPickup();
   // Reteinte les deux modèles dès que le stuff change (achat, ramassage,
   // reset au respawn) même si le slot correspondant n'est pas affiché tout
   // de suite — la teinte sera donc déjà bonne si on rechange de slot plus tard.
@@ -696,7 +759,7 @@ function handleWeaponsUpdate(weapons) {
   // Si le slot actif vient de perdre son arme (ex: reset à la mort), on
   // retombe sur le pistolet plutôt que de rester bloqué sur un slot vide.
   if (!myWeapons[currentSlot]) {
-    selectSlot(0);
+    selectSlot(0, { silent: true });
   } else {
     refreshEquippedWeaponDisplay();
     updateInventoryUI();
@@ -705,6 +768,7 @@ function handleWeaponsUpdate(weapons) {
 }
 
 function handleVestCountUpdate(count) {
+  if (count > myVestCount && !isRecentBuy()) audio.playPickup();
   myVestCount = count;
   updateInventoryUI();
   if (isShopOpen()) renderShop(getShopState());
@@ -729,6 +793,7 @@ function flashDamage() {
 
 let hitMarkerTimeout = null;
 function showHitMarker() {
+  audio.playHitMarker();
   crosshairEl.classList.add('hit');
   clearTimeout(hitMarkerTimeout);
   hitMarkerTimeout = setTimeout(() => crosshairEl.classList.remove('hit'), 150);
@@ -737,6 +802,7 @@ function showHitMarker() {
 let respawnInterval = null;
 function handleYouDied() {
   isDead = true;
+  audio.playDeath();
   localHp = 0;
   updateHealthUI(0);
   updateShieldUI(0);
@@ -774,7 +840,8 @@ function handleYouRespawned({ position }) {
   updateHealthUI(MAX_HP);
   myWeapons = [{ id: 'pistol', rarity: 'gray' }, null];
   applyRarityTint('pistol', 'gray');
-  selectSlot(0);
+  selectSlot(0, { silent: true });
+  audio.playRespawn();
   deathScreenEl.hidden = true;
   clearInterval(respawnInterval);
   verticalVelocity = 0;
@@ -784,18 +851,30 @@ function handleYouRespawned({ position }) {
 }
 
 function handleHpUpdate(hp) {
-  if (hp < localHp) flashDamage();
+  if (hp < localHp) {
+    flashDamage();
+    audio.playHurt();
+  }
   localHp = hp;
   updateHealthUI(hp);
 }
 
 function handleShieldUpdate(shield) {
+  if (shield > localShield) audio.playUseVest();
   updateShieldUI(shield);
 }
 
 function handleMoneyUpdate(money) {
+  if (money < localMoney) audio.playPurchase(); // l'argent ne baisse que quand on achète
   updateMoneyUI(money);
   if (isShopOpen()) renderShop(getShopState());
+}
+
+// Quelqu'un vient d'être éliminé (voir 'kill-feed' dans server.js) : on
+// l'affiche, et si c'est toi le tueur, petit « ding » de confirmation.
+function handleKillFeed(data) {
+  scoreboard.addKill(data);
+  if (data && data.killerId && data.killerId === getMyId()) audio.playKill();
 }
 
 // ---------------------------------------------------------------------------
@@ -818,6 +897,16 @@ let isCrouching = false;
 let isAiming = false;
 
 const GRAVITY = 18;
+
+// Sons de déplacement (voir audio.js) : distance parcourue au sol depuis le
+// dernier pas, et orientation de l'« oreille » du joueur pour spatialiser les
+// sons des autres.
+const STEP_LENGTH = 1.7; // mètres entre deux pas (marche)
+const CROUCH_STEP_LENGTH = 2.4; // accroupi : pas plus espacés (et plus discrets, voir audio.js)
+let stepDistance = 0;
+let prevStepX = 0;
+let prevStepZ = 0;
+const listenerDir = new THREE.Vector3();
 const JUMP_SPEED = 6.5;
 let verticalVelocity = 0;
 let isGrounded = true;
@@ -881,6 +970,7 @@ function onKeyChange(e, isDown) {
       if (isDown && isGrounded && !isDead) {
         verticalVelocity = JUMP_SPEED;
         isGrounded = false;
+        audio.playJump();
       }
       break;
     case keybinds.crouch:
@@ -935,7 +1025,10 @@ document.addEventListener('keydown', (e) => {
 // physique dans la salle). Le serveur reste seul juge des achats — voir
 // shop.js et 'buy-item' dans mini-warzone-server/server.js.
 initShop({
-  onBuy: (itemId) => sendBuyItem(itemId),
+  onBuy: (itemId) => {
+    lastBuyClickAt = performance.now();
+    sendBuyItem(itemId);
+  },
   onClose: () => controls.lock(),
 });
 
@@ -1045,7 +1138,22 @@ function updatePlayerShieldSteps({ id, steps }) {
 function updateOtherPlayer({ id, position, rotationY }) {
   const entry = otherPlayers.get(id);
   if (!entry || !position) return;
-  entry.targetPosition.set(position.x, position.y - EYE_HEIGHT, position.z);
+  const footY = position.y - EYE_HEIGHT;
+
+  // Pas des autres joueurs : on cumule la distance qu'ils parcourent AU SOL
+  // (pas de variation de hauteur = ni saut ni chute) et on joue un pas,
+  // spatialisé à leurs pieds, tous les ~1,9 m.
+  const moved = Math.hypot(position.x - entry.targetPosition.x, position.z - entry.targetPosition.z);
+  const risen = Math.abs(footY - entry.targetPosition.y);
+  if (entry.mesh.visible && moved > 0.01 && moved < 2 && risen < 0.15) {
+    entry.stepDistance = (entry.stepDistance || 0) + moved;
+    if (entry.stepDistance >= 1.9) {
+      entry.stepDistance = 0;
+      audio.playFootstep({ at: { x: position.x, y: footY, z: position.z } });
+    }
+  }
+
+  entry.targetPosition.set(position.x, footY, position.z);
   entry.targetRotationY = rotationY || 0;
 }
 
@@ -1122,6 +1230,7 @@ function tryShoot(now) {
   const maxLength = Math.min(nearestObstacleDistance(origin, dir), 60);
   showShotTracer(origin, dir, maxLength);
   showMuzzleFlash();
+  audio.playShot(weapon.id);
   // On envoie le SLOT actif (0/1), jamais l'id d'arme ni les dégâts : le
   // serveur retrouve lui-même l'arme + la rareté réellement équipées dans
   // ce slot (voir server.js) — impossible de tricher en prétendant avoir
@@ -1150,6 +1259,7 @@ function startNetwork() {
   if (networkStarted) return;
   networkStarted = true;
   keybinds = getKeybinds(); // au cas où elles ont été changées depuis le lobby avant de rejouer
+  applySettings(); // idem pour sensibilité, champ de vision, volume et bloom
 
   const pseudo = auth.currentUser?.displayName || 'Joueur';
   const groupId = getActiveGroupId();
@@ -1158,8 +1268,10 @@ function startNetwork() {
     onTeamAssigned: handleTeamAssigned,
     onPlayerJoined: addOtherPlayer,
     onPlayerMoved: updateOtherPlayer,
-    onPlayerShoot: ({ origin, direction, maxLength }) =>
-      showShotTracer(origin, direction, Number.isFinite(maxLength) ? maxLength : 40),
+    onPlayerShoot: ({ origin, direction, maxLength, weaponId }) => {
+      showShotTracer(origin, direction, Number.isFinite(maxLength) ? maxLength : 40);
+      if (origin) audio.playShot(weaponId, origin); // spatialisé : on entend d'où ça tire
+    },
     onPlayerLeft: removeOtherPlayer,
     onConnectError: () => {
       loadingEl.style.display = 'block';
@@ -1187,6 +1299,8 @@ function startNetwork() {
     onCurrentWeaponPickups: handleCurrentWeaponPickups,
     onWeaponPickupSpawned: addGroundWeaponPickup,
     onWeaponPickupRemoved: handleWeaponPickupRemoved,
+    onKillFeed: handleKillFeed,
+    onScoreboard: (list) => scoreboard.setScores(list),
   });
 }
 
@@ -1242,13 +1356,33 @@ function animate() {
     camera.position.y += verticalVelocity * delta;
 
     if (camera.position.y <= standingY) {
+      const fallSpeed = -verticalVelocity; // vitesse d'impact, avant remise à zéro
       camera.position.y = standingY;
       verticalVelocity = 0;
+      // isGrounded vaut encore la valeur de la frame précédente : on n'a donc un
+      // atterrissage que si on était en l'air juste avant.
+      if (!isGrounded && fallSpeed > 4) audio.playLand(Math.min(1, fallSpeed / 14));
       isGrounded = true;
     } else {
       isGrounded = false;
     }
   }
+
+  // --- Sons : pas (un tous les STEP_LENGTH mètres parcourus au sol) et oreille
+  // du joueur (position + direction du regard) pour les sons spatialisés.
+  const stepDelta = Math.hypot(camera.position.x - prevStepX, camera.position.z - prevStepZ);
+  prevStepX = camera.position.x;
+  prevStepZ = camera.position.z;
+  if (!isDead && isGrounded && isMoving && stepDelta < 1.5) {
+    // (stepDelta >= 1.5 = téléportation : respawn, pas un vrai déplacement)
+    stepDistance += stepDelta;
+    if (stepDistance >= (isCrouching ? CROUCH_STEP_LENGTH : STEP_LENGTH)) {
+      stepDistance = 0;
+      audio.playFootstep({ crouching: isCrouching });
+    }
+  }
+  camera.getWorldDirection(listenerDir);
+  audio.setListener(camera.position.x, camera.position.y, camera.position.z, listenerDir.x, listenerDir.z);
 
   // --- Visée : zoom du champ de vision + arme recentrée
   const targetFov = isAiming && !isDead ? AIM_FOV : BASE_FOV;
