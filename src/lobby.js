@@ -39,8 +39,8 @@ import {
 import { saveMyAppearance, listenUserAppearance } from './profiles.js';
 import { initKeybindsPicker, getKeybinds, keyLabel, describeMovementKeys } from './keybinds.js';
 import { setActiveGroupId } from './game-session.js';
-import { initSettingsPicker } from './settings.js';
-import { audio } from './audio.js';
+import { disconnectFromServer } from './network.js';
+import { listenIsAdmin, listenOwnSanction, initSanctionScreen, initAdminPanel } from './admin.js';
 import {
   initMessaging,
   setMessagingUser,
@@ -123,7 +123,21 @@ initMessaging({
   },
 });
 
+// Joueur banni/suspendu : un écran plein écran recouvre tout (jeu compris), et
+// on le déconnecte de la partie en cours (voir admin.js).
+const sanctionScreen = initSanctionScreen({
+  onBlock: () => {
+    disconnectFromServer();
+    document.exitPointerLock?.();
+  },
+  onLogout: () => signOutUser(),
+});
+// Menu d'admin (onglet Paramètres) : n'apparaît que si le compte est admin.
+const adminPanel = initAdminPanel();
+
 function clearSubscriptions() {
+  sanctionScreen.set(null);
+  adminPanel.setUser(null);
   setMessagingUser(null);
   unsubscribers.forEach((unsub) => unsub());
   unsubscribers = [];
@@ -151,24 +165,10 @@ function updateMenuHelp() {
     `${describeMovementKeys(k)} pour bouger, souris pour regarder, clic pour tirer, ` +
     `molette ou ${keyLabel(k.weaponSlot1)}/${keyLabel(k.weaponSlot2)} pour changer d'arme, ` +
     `${keyLabel(k.pickupWeapon)} pour ramasser une arme au sol, ` +
-    `${keyLabel(k.useVest)} pour utiliser un gilet, ${keyLabel(k.shop)} pour la boutique, ` +
-    `${keyLabel(k.scoreboard)} (maintenu) pour les scores, Échap pour sortir`;
+    `${keyLabel(k.useVest)} pour utiliser un gilet, ${keyLabel(k.shop)} pour la boutique, Échap pour sortir`;
 }
 updateMenuHelp();
 initKeybindsPicker({ onChange: updateMenuHelp });
-
-// Réglages de jeu (sensibilité, champ de vision, volume, bloom) — voir
-// settings.js. Au relâchement du curseur de volume on joue un tir d'essai,
-// pour pouvoir régler le son sans lancer une partie : le geste de
-// l'utilisateur (le clic sur le curseur) suffit à débloquer l'audio du
-// navigateur.
-initSettingsPicker({
-  onVolumeCommit: (settings) => {
-    audio.unlock();
-    audio.setVolume(settings.volume);
-    audio.playShot('pistol');
-  },
-});
 
 function showAuthScreen() {
   authScreen.hidden = false;
@@ -708,6 +708,9 @@ onAuthChange((user) => {
   lobbyEmailEl.textContent = user.email || '';
   showLobbyScreen();
   setMessagingUser({ uid: user.uid, pseudo: user.displayName || user.email });
+  adminPanel.setUser({ uid: user.uid, pseudo: user.displayName || user.email });
+  unsubscribers.push(listenOwnSanction(user.uid, (sanction) => sanctionScreen.set(sanction)));
+  unsubscribers.push(listenIsAdmin(user.uid, (isAdmin) => adminPanel.setAdmin(isAdmin)));
   renderHomeParty(); // ton perso s'affiche tout de suite, sans attendre les groupes
 
   // Republie le skin de cet appareil dans ton profil public : c'est ce que

@@ -73,73 +73,6 @@
       pointer-events: none;
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
     }
-    /* Kill feed : en haut à droite, les plus récents en bas ; chaque ligne
-       s'estompe puis disparaît toute seule (voir scoreboard.js) */
-    #kill-feed {
-      position: fixed;
-      top: 16px;
-      right: 16px;
-      z-index: 6;
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: 4px;
-      pointer-events: none;
-      font-family: system-ui, sans-serif;
-    }
-    .feed-entry {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 4px 10px;
-      border-radius: 6px;
-      border: 1px solid transparent;
-      background: rgba(0, 0, 0, 0.55);
-      color: white;
-      font-size: 0.85rem;
-      font-weight: 600;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-      transition: opacity 0.5s ease;
-    }
-    .feed-entry.mine { border-color: rgba(255, 210, 63, 0.8); }
-    .feed-entry.died { border-color: rgba(230, 57, 70, 0.8); }
-    .feed-entry.fade { opacity: 0; }
-    .feed-weapon { opacity: 0.85; font-weight: 500; }
-    .sb-team-red { color: #ff7a85; }
-    .sb-team-blue { color: #7dbdff; }
-
-    /* Tableau des scores : affiché tant que la touche est maintenue */
-    #scoreboard {
-      position: fixed;
-      inset: 0;
-      z-index: 8;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      pointer-events: none;
-      font-family: system-ui, sans-serif;
-    }
-    #scoreboard[hidden] { display: none; }
-    .sb-card {
-      min-width: 380px;
-      max-width: 90vw;
-      max-height: 80vh;
-      overflow: hidden;
-      padding: 16px 20px;
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      background: rgba(10, 12, 18, 0.85);
-      color: white;
-    }
-    .sb-title { margin: 0 0 10px; font-size: 1rem; letter-spacing: 1px; text-transform: uppercase; opacity: 0.8; }
-    .sb-teams { display: flex; justify-content: center; gap: 14px; margin-bottom: 10px; font-weight: 800; font-size: 1.05rem; }
-    .sb-team-sep { opacity: 0.4; }
-    .sb-table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
-    .sb-table th { text-align: left; padding: 4px 8px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; opacity: 0.55; }
-    .sb-table td { padding: 6px 8px; border-top: 1px solid rgba(255, 255, 255, 0.07); }
-    .sb-table .sb-num { text-align: right; width: 64px; font-variant-numeric: tabular-nums; }
-    .sb-table tr.mine td { background: rgba(255, 210, 63, 0.14); font-weight: 700; }
-    .sb-dot { display: inline-block; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: currentColor; }
     #crosshair {
       position: fixed;
       top: 50%;
@@ -647,6 +580,45 @@
       .play-button-big { min-width: 0; width: 100%; }
     }
 
+    /* Administration */
+    .admin-section { margin-top: 28px; padding-top: 18px; border-top: 1px solid rgba(255, 255, 255, 0.12); }
+    .admin-hint { font-size: 0.82rem; opacity: 0.6; margin: 0 0 12px; }
+    .admin-toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+    .admin-toolbar input { flex: 1; min-width: 0; }
+    .admin-user-list { list-style: none; margin: 0 0 12px; padding: 0; max-height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+    .admin-user-list li.muted { opacity: 0.5; font-size: 0.85rem; padding: 6px 4px; }
+    .admin-user { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: rgba(255, 255, 255, 0.05); border-radius: 8px; flex-wrap: wrap; }
+    .admin-user-name { font-weight: 600; font-size: 0.9rem; flex: 1; min-width: 80px; overflow-wrap: anywhere; }
+    .admin-user-actions { display: flex; gap: 6px; }
+    .admin-user-actions button { padding: 5px 10px; font-size: 0.8rem; }
+    .admin-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.12); }
+    .admin-badge-admin { background: rgba(58, 134, 255, 0.35); }
+    .admin-badge-suspend { background: rgba(255, 170, 0, 0.35); }
+    .admin-badge-ban { background: rgba(230, 57, 70, 0.5); }
+    .admin-sanction-form { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: rgba(0, 0, 0, 0.25); border-radius: 10px; }
+    .admin-sanction-form[hidden], .admin-custom-row[hidden] { display: none; }
+    .admin-sanction-target { font-weight: 600; }
+    .admin-custom-row { display: flex; gap: 8px; }
+    .admin-custom-row input { width: 90px; }
+    .admin-form-actions { display: flex; gap: 8px; }
+
+    /* Écran de sanction (banni / suspendu) */
+    .sanction-screen {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(8, 8, 12, 0.97);
+      padding: 24px;
+    }
+    .sanction-screen[hidden] { display: none; }
+    .sanction-box { max-width: 460px; text-align: center; display: flex; flex-direction: column; gap: 14px; align-items: center; }
+    .sanction-box h1 { margin: 0; color: #e63946; }
+    .sanction-box p { margin: 0; opacity: 0.85; overflow-wrap: anywhere; }
+    .sanction-countdown { font-size: 1.3rem; font-weight: 700; opacity: 1 !important; }
+
     /* Messagerie */
     .messages-layout {
       display: flex;
@@ -878,22 +850,6 @@
     .account-info dt { opacity: 0.6; }
     .account-info dd { margin: 0; font-weight: 600; word-break: break-all; }
     .keybind-list { margin: 0 0 16px; display: flex; flex-direction: column; gap: 8px; }
-    .setting-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-      padding: 10px 12px;
-      border-radius: 6px;
-      background: rgba(255, 255, 255, 0.05);
-      font-size: 0.9rem;
-    }
-    .setting-control { display: flex; align-items: center; gap: 12px; }
-    .setting-value { min-width: 60px; text-align: right; font-weight: 700; }
-    /* Les styles génériques d'input (champ de texte) déformeraient curseurs et cases à cocher */
-    .setting-row input[type="range"] { width: 200px; padding: 0; border: none; background: transparent; accent-color: #e63946; }
-    .setting-row input[type="checkbox"] { width: 20px; height: 20px; padding: 0; accent-color: #e63946; }
-    .settings-gap { margin-top: 24px; }
     .keybind-row {
       display: flex;
       justify-content: space-between;
@@ -995,8 +951,6 @@
 <body>
   <div id="loading">Chargement de la map…</div>
   <div id="pickup-prompt"></div>
-  <div id="kill-feed"></div>
-  <div id="scoreboard" hidden></div>
   <div id="crosshair"></div>
   <div id="damage-flash"></div>
 
@@ -1160,17 +1114,49 @@
         </div>
       </section>
 
-      <!-- Paramètres : réglages de jeu (voir settings.js) et touches personnalisables (voir keybinds.js) -->
+      <!-- Paramètres : touches personnalisables (voir keybinds.js) -->
       <section id="lobby-tab-settings" class="lobby-tab" hidden>
         <div class="lobby-section">
           <h2>Paramètres</h2>
-          <h3>Jeu</h3>
-          <div id="settings-list" class="keybind-list"></div>
-          <button id="settings-reset" type="button" class="secondary">Réinitialiser les réglages</button>
-          <h3 class="settings-gap">Touches</h3>
+          <h3>Touches</h3>
           <div id="keybind-list" class="keybind-list"></div>
           <button id="keybind-reset" type="button" class="secondary">Réinitialiser les touches</button>
           <p id="keybind-error" class="error"></p>
+
+          <!-- Administration : visible seulement si users/{uid}.admin vaut "true" (voir admin.js) -->
+          <div id="admin-section" class="admin-section" hidden>
+            <h3>Administration</h3>
+            <p class="admin-hint">Suspendre ou bannir un joueur. Les admins ne peuvent pas être sanctionnés.</p>
+            <div class="admin-toolbar">
+              <input id="admin-user-filter" type="text" placeholder="Filtrer par pseudo…" autocomplete="off" />
+              <button id="admin-refresh" type="button" class="secondary">Actualiser</button>
+            </div>
+            <ul id="admin-user-list" class="admin-user-list"></ul>
+            <form id="admin-sanction-form" class="admin-sanction-form" hidden>
+              <div id="admin-sanction-target" class="admin-sanction-target"></div>
+              <select id="admin-sanction-kind">
+                <option value="60000">Suspendre 1 minute</option>
+                <option value="300000">Suspendre 5 minutes</option>
+                <option value="3600000">Suspendre 1 heure</option>
+                <option value="custom">Suspendre (durée personnalisée)</option>
+                <option value="ban">Bannir</option>
+              </select>
+              <div id="admin-custom-row" class="admin-custom-row" hidden>
+                <input id="admin-custom-amount" type="number" min="1" step="1" value="10" />
+                <select id="admin-custom-unit">
+                  <option value="m">minutes</option>
+                  <option value="h">heures</option>
+                  <option value="d">jours</option>
+                </select>
+              </div>
+              <input id="admin-reason" type="text" maxlength="200" placeholder="Motif (optionnel, visible par le joueur)" autocomplete="off" />
+              <div class="admin-form-actions">
+                <button type="submit">Appliquer</button>
+                <button id="admin-cancel" type="button" class="secondary">Annuler</button>
+              </div>
+              <p id="admin-error" class="error"></p>
+            </form>
+          </div>
         </div>
       </section>
 
@@ -1195,6 +1181,16 @@
     <p id="menu-help">ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, 1/2 pour changer d'arme, P pour utiliser un gilet, B pour la boutique, Échap pour sortir</p>
     <button id="play-button" disabled>Chargement…</button>
     <button id="quit-button" class="secondary" type="button">Quitter la partie</button>
+  </div>
+
+  <!-- Écran affiché à un joueur banni ou suspendu (voir admin.js) : recouvre tout, jeu compris -->
+  <div id="sanction-screen" class="sanction-screen" hidden>
+    <div class="sanction-box">
+      <h1 id="sanction-title"></h1>
+      <p id="sanction-message"></p>
+      <p id="sanction-countdown" class="sanction-countdown"></p>
+      <button id="sanction-logout" type="button" class="secondary">Se déconnecter</button>
+    </div>
   </div>
 
   <script type="module" src="/src/main.js"></script>
