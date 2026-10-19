@@ -199,10 +199,13 @@ mapLoader.load(
       }
     });
 
-    // Le GLB fourni est orienté Z-up. Le jeu utilise Y-up : on le tourne
-    // de -90° autour de X puis on remonte le sol (ancien Z=-46) à Y=0.
-    gltf.scene.rotation.x = -Math.PI / 2;
-    gltf.scene.position.y = 46;
+    // Le GLB est déjà orienté correctement pour le jeu (Y-up).
+    // Ne pas le tourner : cela mettait la carte à la verticale.
+    // On conserve uniquement le décalage vertical nécessaire pour placer
+    // le sol à Y=0 et aligner la carte avec map-colliders.glb.
+    gltf.scene.rotation.set(0, 0, 0);
+    gltf.scene.position.set(0, 46, 0);
+    gltf.scene.scale.set(1, 1, 1);
     scene.add(gltf.scene);
     scene.remove(fallbackGround);
     gltf.scene.updateMatrixWorld(true);
