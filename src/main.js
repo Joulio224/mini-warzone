@@ -199,6 +199,10 @@ mapLoader.load(
       }
     });
 
+    // Le GLB fourni est orienté Z-up. Le jeu utilise Y-up : on le tourne
+    // de -90° autour de X puis on remonte le sol (ancien Z=-46) à Y=0.
+    gltf.scene.rotation.x = -Math.PI / 2;
+    gltf.scene.position.y = 46;
     scene.add(gltf.scene);
     scene.remove(fallbackGround);
     gltf.scene.updateMatrixWorld(true);
@@ -272,10 +276,9 @@ mapLoader.load(
 
       // Ces meshes restent invisibles : ils servent uniquement aux collisions.
       collisionMeshes.push(child);
-
-      // Boîte englobante mondiale de chaque mesh de collision.
-      // Pour des meshes simples de murs et d'obstacles, cela fournit une
-      // collision robuste sans afficher la géométrie de collision.
+      // Les boîtes accélèrent les collisions de déplacement ; les meshes
+      // restent disponibles pour bloquer précisément les tirs par raycast.
+      collisionBoxes.push(box.clone());
       meshCount++;
     });
 
@@ -1029,32 +1032,22 @@ const movementRayDirections = [
 const movementRayOrigin = new THREE.Vector3();
 
 function collidesAt(x, z) {
-  if (collisionMeshes.length === 0) return false;
+  if (collisionBoxes.length === 0) return false;
 
   const eyeY = camera.position.y;
-  const heights = [
-    eyeY - 1.45,
-    eyeY - 0.8,
-    eyeY - 0.2,
-  ];
+  const playerMinY = eyeY - 1.7;
+  const playerMaxY = eyeY - 0.15;
 
-  for (const y of heights) {
-    movementRayOrigin.set(x, y, z);
+  for (const box of collisionBoxes) {
+    // Ignore walls that are entirely above or below the player's body.
+    if (box.max.y < playerMinY || box.min.y > playerMaxY) continue;
 
-    for (const direction of movementRayDirections) {
-      movementRaycaster.set(movementRayOrigin, direction);
-      movementRaycaster.near = 0;
-      movementRaycaster.far = PLAYER_RADIUS;
-
-      const hits = movementRaycaster.intersectObjects(
-        collisionMeshes,
-        true
-      );
-
-      if (hits.length > 0 && hits[0].distance > 0.015) {
-        return true;
-      }
-    }
+    // Circle (player) versus axis-aligned box, in the horizontal plane.
+    const closestX = THREE.MathUtils.clamp(x, box.min.x, box.max.x);
+    const closestZ = THREE.MathUtils.clamp(z, box.min.z, box.max.z);
+    const dx = x - closestX;
+    const dz = z - closestZ;
+    if (dx * dx + dz * dz < PLAYER_RADIUS * PLAYER_RADIUS) return true;
   }
 
   return false;
@@ -1171,7 +1164,7 @@ const otherPlayers = new Map(); // socket id -> { mesh, targetPosition, targetRo
 // En solo, le joueur retrouve sa couleur personnelle sauvegardée dans appearance
 // (et dans Firestore via profiles.js). Cette couleur personnelle n'est jamais
 // remplacée par la couleur temporaire de l'équipe.
-const TEAM_MARKER_COLORS = { red: 0xe63946, blue: 0x3a86ff };
+const TEAM_MARKER_COLORS = { red: 0xe63946, blue: 0x3a86ff, yellow: 0xffd60a, green: 0x2dc653 };
 // Facteur de luminosité du corps selon le nombre de gilets portés (0 à 3) —
 // chaque gilet assombrit un peu plus, jusqu'à très sombre à 3 gilets.
 const SHIELD_DARKEN_FACTORS = [1, 0.72, 0.48, 0.28];
@@ -1374,9 +1367,10 @@ function handleTeamAssigned({ team, spawn }) {
     camera.position.set(spawn.x, spawn.y, spawn.z);
   }
   if (teamLabelEl) {
-    teamLabelEl.textContent = team === 'blue' ? 'Équipe Bleue' : 'Équipe Rouge';
-    teamLabelEl.classList.remove('team-red', 'team-blue');
-    teamLabelEl.classList.add(team === 'blue' ? 'team-blue' : 'team-red');
+    const teamNames = { red: 'Rouge', blue: 'Bleue', yellow: 'Jaune', green: 'Verte' };
+    teamLabelEl.textContent = `Équipe ${teamNames[team] || 'Rouge'}`;
+    teamLabelEl.classList.remove('team-red', 'team-blue', 'team-yellow', 'team-green');
+    teamLabelEl.classList.add(`team-${teamNames[team] ? team : 'red'}`);
   }
 }
 

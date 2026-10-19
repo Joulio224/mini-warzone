@@ -2,7 +2,7 @@
 // Groupes : créer un groupe, inviter des amis (demande à accepter), quitter
 // ---------------------------------------------------------------------------
 // groups/{groupId} { name, ownerId, members: [uid...], memberPseudos: {uid: pseudo},
-//                     mode: 'solo'|'team', memberTeams: {uid: 'red'|'blue'}, createdAt }
+//                     mode: 'solo'|'team', memberTeams: {uid: 'red'|'blue'|'yellow'|'green'}, createdAt }
 // groupInvites/{inviteId} { groupId, groupName, fromUid, fromPseudo, toUid, toPseudo, status, createdAt }
 import {
   collection,
@@ -74,7 +74,7 @@ export async function setGroupMode(groupId, mode) {
   await updateDoc(doc(db, 'groups', groupId), { mode: mode === 'team' ? 'team' : 'solo' });
 }
 
-// Assigne (ou réassigne) un membre à l'équipe rouge ou bleue. Active aussi
+// Assigne (ou réassigne) un membre à l'une des quatre équipes. Active aussi
 // mode:'team' dans le même appel — avant, les deux étaient séparés (bouton
 // Mode + pastille par membre), et un groupe pouvait se retrouver à moitié
 // configuré : des couleurs choisies mais le mode resté sur "Solo". Dans cet
@@ -84,8 +84,12 @@ export async function setGroupMode(groupId, mode) {
 // assignTeam() dans server.js). Assigner une couleur n'a de sens QUE si le
 // mode Équipes est actif, donc autant garantir que les deux vont toujours
 // ensemble plutôt que de compter sur deux clics distincts dans le bon ordre.
+export async function setGroupAdmin(groupId, uid) {
+  await updateDoc(doc(db, 'groups', groupId), { adminId: uid });
+}
+
 export async function setMemberTeam(groupId, uid, team) {
-  if (team !== 'red' && team !== 'blue') return;
+  if (!['red', 'blue', 'yellow', 'green'].includes(team)) return;
   await updateDoc(doc(db, 'groups', groupId), {
     mode: 'team',
     [`memberTeams.${uid}`]: team,

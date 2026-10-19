@@ -8,8 +8,8 @@
 // en HTML, uniquement posés avec textContent.
 // ---------------------------------------------------------------------------
 
-const TEAM_CLASS = { red: 'sb-team-red', blue: 'sb-team-blue' };
-const TEAM_LABEL = { red: 'Rouge', blue: 'Bleue' };
+const TEAM_CLASS = { red: 'sb-team-red', blue: 'sb-team-blue', yellow: 'sb-team-yellow', green: 'sb-team-green' };
+const TEAM_LABEL = { red: 'Rouge', blue: 'Bleue', yellow: 'Jaune', green: 'Verte' };
 
 function teamClass(team) {
   return TEAM_CLASS[team] || '';
@@ -106,14 +106,15 @@ export function createScoreboard({
     // Totaux par équipe, seulement s'il y a des joueurs en mode Équipes
     const teamPlayers = scores.filter((p) => p.mode === 'team' && TEAM_CLASS[p.team]);
     if (teamPlayers.length > 0) {
-      const totals = { red: 0, blue: 0 };
+      const totals = { red: 0, blue: 0, yellow: 0, green: 0 };
       teamPlayers.forEach((p) => {
         totals[p.team] += p.kills;
       });
       const bar = el('div', 'sb-teams');
-      bar.appendChild(el('span', `sb-team-total ${TEAM_CLASS.red}`, `${TEAM_LABEL.red} ${totals.red}`));
-      bar.appendChild(el('span', 'sb-team-sep', '—'));
-      bar.appendChild(el('span', `sb-team-total ${TEAM_CLASS.blue}`, `${totals.blue} ${TEAM_LABEL.blue}`));
+      ['red', 'blue', 'yellow', 'green'].forEach((team, index) => {
+        if (index > 0) bar.appendChild(el('span', 'sb-team-sep', '—'));
+        bar.appendChild(el('span', `sb-team-total ${TEAM_CLASS[team]}`, `${TEAM_LABEL[team]} ${totals[team]}`));
+      });
       card.appendChild(bar);
     }
 

@@ -29,6 +29,7 @@ import {
   declineGroupInvite,
   setGroupMode,
   setMemberTeam,
+  setGroupAdmin,
 } from './groups.js';
 import {
   initAppearancePicker,
@@ -39,8 +40,8 @@ import {
 import { saveMyAppearance, listenUserAppearance } from './profiles.js';
 import { initKeybindsPicker, getKeybinds, keyLabel, describeMovementKeys } from './keybinds.js';
 import { setActiveGroupId } from './game-session.js';
-import { disconnectFromServer } from './network.js';
-import { listenIsAdmin, listenOwnSanction, initSanctionScreen, initAdminPanel } from './admin.js';
+import { initSettingsPicker } from './settings.js';
+import { audio } from './audio.js';
 import {
   initMessaging,
   setMessagingUser,
@@ -92,6 +93,7 @@ menuEl.style.display = 'none';
 let currentUser = null;
 let currentFriends = [];
 let currentGroups = [];
+let openMemberMenuKey = null;
 let unsubscribers = [];
 
 let pendingFriendRequestCount = 0;
@@ -123,21 +125,7 @@ initMessaging({
   },
 });
 
-// Joueur banni/suspendu : un écran plein écran recouvre tout (jeu compris), et
-// on le déconnecte de la partie en cours (voir admin.js).
-const sanctionScreen = initSanctionScreen({
-  onBlock: () => {
-    disconnectFromServer();
-    document.exitPointerLock?.();
-  },
-  onLogout: () => signOutUser(),
-});
-// Menu d'admin (onglet Paramètres) : n'apparaît que si le compte est admin.
-const adminPanel = initAdminPanel();
-
 function clearSubscriptions() {
-  sanctionScreen.set(null);
-  adminPanel.setUser(null);
   setMessagingUser(null);
   unsubscribers.forEach((unsub) => unsub());
   unsubscribers = [];
@@ -165,10 +153,24 @@ function updateMenuHelp() {
     `${describeMovementKeys(k)} pour bouger, souris pour regarder, clic pour tirer, ` +
     `molette ou ${keyLabel(k.weaponSlot1)}/${keyLabel(k.weaponSlot2)} pour changer d'arme, ` +
     `${keyLabel(k.pickupWeapon)} pour ramasser une arme au sol, ` +
-    `${keyLabel(k.useVest)} pour utiliser un gilet, ${keyLabel(k.shop)} pour la boutique, Échap pour sortir`;
+    `${keyLabel(k.useVest)} pour utiliser un gilet, ${keyLabel(k.shop)} pour la boutique, ` +
+    `${keyLabel(k.scoreboard)} (maintenu) pour les scores, Échap pour sortir`;
 }
 updateMenuHelp();
 initKeybindsPicker({ onChange: updateMenuHelp });
+
+// Réglages de jeu (sensibilité, champ de vision, volume, bloom) — voir
+// settings.js. Au relâchement du curseur de volume on joue un tir d'essai,
+// pour pouvoir régler le son sans lancer une partie : le geste de
+// l'utilisateur (le clic sur le curseur) suffit à débloquer l'audio du
+// navigateur.
+initSettingsPicker({
+  onVolumeCommit: (settings) => {
+    audio.unlock();
+    audio.setVolume(settings.volume);
+    audio.playShot('pistol');
+  },
+});
 
 function showAuthScreen() {
   authScreen.hidden = false;
@@ -537,10 +539,19 @@ function renderIncomingGroupInvites(invites) {
 function buildMemberCard(uid, pseudo, group, isOwner) {
   const appearance =
     uid === currentUser?.uid ? getAppearance() : memberAppearances.get(uid) || DEFAULT_APPEARANCE;
+  const isAdmin = group.adminId === uid;
+  const canManageTeams = isOwner || group.adminId === currentUser?.uid;
+  const menuKey = `${group.id}:${uid}`;
+  const menuOpen = openMemberMenuKey === menuKey;
 
   const card = document.createElement('div');
   card.className = 'member-card';
+  card.classList.toggle('member-card-menu-open', menuOpen);
 
+  const avatarButton = document.createElement('button');
+  avatarButton.type = 'button';
+  avatarButton.className = 'member-avatar-button';
+  avatarButton.title = `Options de ${pseudo || 'ce joueur'}`;
   const avatar = document.createElement('div');
   avatar.className = 'member-avatar';
   avatar.style.background = appearance.bodyColor;
@@ -548,33 +559,66 @@ function buildMemberCard(uid, pseudo, group, isOwner) {
   face.className = 'member-face';
   face.textContent = appearance.face;
   avatar.appendChild(face);
-  card.appendChild(avatar);
+  if (group?.mode === 'team') {
+    const currentTeam = group.memberTeams?.[uid] || null;
+    ['red', 'blue', 'yellow', 'green'].forEach((team) => avatar.classList.toggle(`team-${team}`, currentTeam === team));
+  }
+  avatarButton.appendChild(avatar);
+  avatarButton.addEventListener('click', () => {
+    openMemberMenuKey = menuOpen ? null : menuKey;
+    renderGroupsList();
+  });
+  card.appendChild(avatarButton);
 
   const name = document.createElement('div');
   name.className = 'member-name';
   name.textContent = pseudo || '?';
   card.appendChild(name);
-
-  if (group?.mode === 'team') {
-    const currentTeam = group.memberTeams?.[uid] || null;
-    avatar.classList.toggle('team-red', currentTeam === 'red');
-    avatar.classList.toggle('team-blue', currentTeam === 'blue');
-
-    const picker = document.createElement('div');
-    picker.className = 'member-team-picker';
-    ['red', 'blue'].forEach((team) => {
-      const dot = document.createElement('button');
-      dot.type = 'button';
-      dot.className = `team-dot team-dot-${team}`;
-      dot.classList.toggle('selected', currentTeam === team);
-      dot.title = team === 'red' ? 'Équipe rouge' : 'Équipe bleue';
-      dot.disabled = !isOwner;
-      dot.addEventListener('click', () => setMemberTeam(group.id, uid, team));
-      picker.appendChild(dot);
-    });
-    card.appendChild(picker);
+  if (isAdmin) {
+    const adminLabel = document.createElement('span');
+    adminLabel.className = 'member-admin-label';
+    adminLabel.textContent = 'ADMIN';
+    card.appendChild(adminLabel);
   }
 
+  if (menuOpen) {
+    const menu = document.createElement('div');
+    menu.className = 'member-action-menu';
+    if (group?.mode === 'team' || canManageTeams) {
+      const teamRow = document.createElement('div');
+      teamRow.className = 'member-team-picker';
+      ['red', 'blue', 'yellow', 'green'].forEach((team) => {
+        const dot = document.createElement('button');
+        dot.type = 'button';
+        dot.className = `team-dot team-dot-${team}`;
+        dot.classList.toggle('selected', group.memberTeams?.[uid] === team);
+        dot.title = ({ red: 'Équipe rouge', blue: 'Équipe bleue', yellow: 'Équipe jaune', green: 'Équipe verte' })[team];
+        dot.disabled = !canManageTeams;
+        dot.addEventListener('click', (event) => {
+          event.stopPropagation();
+          setMemberTeam(group.id, uid, team).catch((error) => { lobbyError.textContent = error.message; });
+          openMemberMenuKey = null;
+        });
+        teamRow.appendChild(dot);
+      });
+      menu.appendChild(teamRow);
+    }
+    if (isOwner) {
+      const adminButton = document.createElement('button');
+      adminButton.type = 'button';
+      adminButton.className = `admin-dot${isAdmin ? ' selected' : ''}`;
+      adminButton.textContent = '♛';
+      adminButton.title = isAdmin ? 'Cet utilisateur est admin' : 'Nommer admin du groupe';
+      adminButton.disabled = isAdmin;
+      adminButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        setGroupAdmin(group.id, uid).catch((error) => { lobbyError.textContent = error.message; });
+        openMemberMenuKey = null;
+      });
+      menu.appendChild(adminButton);
+    }
+    card.appendChild(menu);
+  }
   return card;
 }
 
@@ -708,9 +752,6 @@ onAuthChange((user) => {
   lobbyEmailEl.textContent = user.email || '';
   showLobbyScreen();
   setMessagingUser({ uid: user.uid, pseudo: user.displayName || user.email });
-  adminPanel.setUser({ uid: user.uid, pseudo: user.displayName || user.email });
-  unsubscribers.push(listenOwnSanction(user.uid, (sanction) => sanctionScreen.set(sanction)));
-  unsubscribers.push(listenIsAdmin(user.uid, (isAdmin) => adminPanel.setAdmin(isAdmin)));
   renderHomeParty(); // ton perso s'affiche tout de suite, sans attendre les groupes
 
   // Republie le skin de cet appareil dans ton profil public : c'est ce que
