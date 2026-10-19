@@ -30,6 +30,7 @@ import {
   setGroupMode,
   setMemberTeam,
   setGroupAdmin,
+  removeMemberFromGroup,
 } from './groups.js';
 import {
   initAppearancePicker,
@@ -541,6 +542,7 @@ function buildMemberCard(uid, pseudo, group, isOwner) {
     uid === currentUser?.uid ? getAppearance() : memberAppearances.get(uid) || DEFAULT_APPEARANCE;
   const isAdmin = group.adminId === uid;
   const canManageTeams = isOwner || group.adminId === currentUser?.uid;
+  const canOpenMemberMenu = canManageTeams;
   const menuKey = `${group.id}:${uid}`;
   const menuOpen = openMemberMenuKey === menuKey;
 
@@ -551,7 +553,7 @@ function buildMemberCard(uid, pseudo, group, isOwner) {
   const avatarButton = document.createElement('button');
   avatarButton.type = 'button';
   avatarButton.className = 'member-avatar-button';
-  avatarButton.title = `Options de ${pseudo || 'ce joueur'}`;
+  avatarButton.title = canOpenMemberMenu ? `Options de ${pseudo || 'ce joueur'}` : (pseudo || 'Joueur');
   const avatar = document.createElement('div');
   avatar.className = 'member-avatar';
   avatar.style.background = appearance.bodyColor;
@@ -565,6 +567,10 @@ function buildMemberCard(uid, pseudo, group, isOwner) {
   }
   avatarButton.appendChild(avatar);
   avatarButton.addEventListener('click', () => {
+    if (!canOpenMemberMenu) {
+      openMemberMenuKey = null;
+      return;
+    }
     openMemberMenuKey = menuOpen ? null : menuKey;
     renderGroupsList();
   });
@@ -607,15 +613,32 @@ function buildMemberCard(uid, pseudo, group, isOwner) {
       const adminButton = document.createElement('button');
       adminButton.type = 'button';
       adminButton.className = `admin-dot${isAdmin ? ' selected' : ''}`;
-      adminButton.textContent = '♛';
-      adminButton.title = isAdmin ? 'Cet utilisateur est admin' : 'Nommer admin du groupe';
-      adminButton.disabled = isAdmin;
+      adminButton.textContent = isAdmin ? '♛̸' : '♛';
+      adminButton.title = isAdmin ? 'Retirer les droits admin' : 'Nommer admin du groupe';
       adminButton.addEventListener('click', (event) => {
         event.stopPropagation();
-        setGroupAdmin(group.id, uid).catch((error) => { lobbyError.textContent = error.message; });
+        setGroupAdmin(group.id, uid, isAdmin).catch((error) => { lobbyError.textContent = error.message; });
         openMemberMenuKey = null;
       });
       menu.appendChild(adminButton);
+    }
+    // Le créateur ou l'admin peut exclure un membre, mais jamais le créateur.
+    const canRemove = uid !== group.ownerId && uid !== currentUser?.uid && (isOwner || (group.adminId === currentUser?.uid && !isAdmin));
+    if (canRemove) {
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.className = 'remove-member-dot';
+      removeButton.textContent = '✕';
+      removeButton.title = `Retirer ${pseudo || 'ce joueur'} du groupe`;
+      removeButton.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        if (!confirm(`Retirer ${pseudo || 'ce joueur'} du groupe ?`)) return;
+        try {
+          await removeMemberFromGroup(group.id, uid);
+          openMemberMenuKey = null;
+        } catch (error) { lobbyError.textContent = error.message; }
+      });
+      menu.appendChild(removeButton);
     }
     card.appendChild(menu);
   }

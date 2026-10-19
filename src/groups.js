@@ -16,6 +16,7 @@ import {
   arrayUnion,
   arrayRemove,
   serverTimestamp,
+  deleteField,
 } from 'firebase/firestore';
 import { db } from './firebase.js';
 
@@ -84,8 +85,18 @@ export async function setGroupMode(groupId, mode) {
 // assignTeam() dans server.js). Assigner une couleur n'a de sens QUE si le
 // mode Équipes est actif, donc autant garantir que les deux vont toujours
 // ensemble plutôt que de compter sur deux clics distincts dans le bon ordre.
-export async function setGroupAdmin(groupId, uid) {
-  await updateDoc(doc(db, 'groups', groupId), { adminId: uid });
+export async function setGroupAdmin(groupId, uid, revoke = false) {
+  await updateDoc(doc(db, 'groups', groupId), { adminId: revoke ? deleteField() : uid });
+}
+
+// Retire un membre du groupe et nettoie ses données associées.
+export async function removeMemberFromGroup(groupId, uid) {
+  await updateDoc(doc(db, 'groups', groupId), {
+    members: arrayRemove(uid),
+    [`memberPseudos.${uid}`]: deleteField(),
+    [`memberTeams.${uid}`]: deleteField(),
+    ...(uid ? {} : {}),
+  });
 }
 
 export async function setMemberTeam(groupId, uid, team) {
