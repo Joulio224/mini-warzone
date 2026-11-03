@@ -1243,13 +1243,24 @@ const movementRayDirections = [
 const movementRayOrigin = new THREE.Vector3();
 
 function collidesAt(x, z) {
+  if (collisionBoxes.length === 0) return false;
+
+  const eyeY = camera.position.y;
+  const playerMinY = eyeY - 1.7;
+  const playerMaxY = eyeY - 0.15;
+
   for (const box of collisionBoxes) {
+    // Ignore walls that are entirely above or below the player's body.
+    if (box.max.y <= playerMinY + 0.05 || box.min.y >= playerMaxY) continue;
+
+    // Circle (player) versus axis-aligned box, in the horizontal plane.
     const closestX = THREE.MathUtils.clamp(x, box.min.x, box.max.x);
     const closestZ = THREE.MathUtils.clamp(z, box.min.z, box.max.z);
     const dx = x - closestX;
     const dz = z - closestZ;
     if (dx * dx + dz * dz < PLAYER_RADIUS * PLAYER_RADIUS) return true;
   }
+
   return false;
 }
 
