@@ -11,6 +11,8 @@
 // la section "Boutique" de main.js) — ce module-ci expose juste
 // openShop()/closeShop()/isShopOpen() à qui les appelle.
 
+import { WEAPON_DEFS, WEAPON_ORDER, GRENADE_DEFS, GRENADE_KINDS } from './weapons.js';
+
 // 3 paliers de rareté, du plus faible au plus fort. `color` sert à la fois
 // à la pastille de rareté dans l'inventaire (voir main.js) et à la teinte
 // appliquée au modèle d'arme en main.
@@ -36,15 +38,13 @@ export function rarityLabel(rarityId) {
   return RARITIES.find((r) => r.id === rarityId)?.label || 'Gris';
 }
 
-// Dégâts/prix de base (palier gris) par type d'arme. `slot` indique où
-// l'achat range l'arme dans le stuff (0 = toujours le pistolet, 1 = l'unique
-// emplacement partagé mitraillette/fusil). Doit rester identique à
-// WEAPON_BASE / WEAPON_BASE_PRICE dans mini-warzone-server/server.js.
-const WEAPON_BASE = {
-  pistol: { name: 'Pistolet', baseDamage: 18, basePrice: 90, slot: 0 },
-  smg: { name: 'Mitraillette', baseDamage: 10, basePrice: 80, slot: 1 },
-  rifle: { name: 'Fusil', baseDamage: 16, basePrice: 110, slot: 1 },
-};
+// Dégâts/prix de base (palier gris) par type d'arme — viennent de weapons.js
+// (qui doit rester identique à WEAPON_DEFS dans mini-warzone-server/server.js).
+// `slot` indique où l'achat range l'arme dans le stuff (0 = toujours le
+// pistolet, 1 = l'unique emplacement partagé par toutes les autres armes).
+const WEAPON_BASE = Object.fromEntries(
+  WEAPON_ORDER.map((id) => [id, WEAPON_DEFS[id]])
+);
 // Monte plus vite que les dégâts (voir RARITY_DAMAGE_STEP) pour que le rouge
 // reste un achat de fin de partie. Doit rester identique à
 // RARITY_PRICE_MULTIPLIER dans mini-warzone-server/server.js.
@@ -87,9 +87,25 @@ function buildCatalog() {
             ? 'Améliore la rareté du pistolet de départ (reste au slot 1).'
             : "Remplace l'arme du slot 2 par cette variante (même si tu en as déjà une).",
         damage,
+        pellets: weapon.pellets,
+        magSize: weapon.magSize,
+        reloadTime: weapon.reloadTime,
         price,
         rarityColor: rarity.color,
       });
+    });
+  });
+
+  GRENADE_KINDS.forEach((kind) => {
+    const def = GRENADE_DEFS[kind];
+    items.push({
+      id: `utility:${kind}`,
+      category: 'utility',
+      kind,
+      name: def.name,
+      description: def.description,
+      price: def.price,
+      max: def.max,
     });
   });
 
@@ -110,12 +126,12 @@ function buildCatalog() {
 // d'inventaire (rarityColor/rarityLabel).
 export const SHOP_CATALOG = buildCatalog();
 
-const CATEGORY_LABELS = { weapon: 'Armes', vest: 'Gilets', ability: 'Capacités' };
+const CATEGORY_LABELS = { weapon: 'Armes', vest: 'Gilets', utility: 'Équipement', ability: 'Capacités' };
 
 // --- État interne du module ------------------------------------------------
 let shopOpen = false;
 let activeCategory = 'weapon';
-let lastState = { money: 0, weapons: [null, null], vestCount: 0, maxVestSlots: BASE_MAX_VEST_SLOTS };
+let lastState = { money: 0, weapons: [null, null], vestCount: 0, maxVestSlots: BASE_MAX_VEST_SLOTS, grenades: { frag: 0, smoke: 0 } };
 let onBuyCallback = null;
 
 const shopScreenEl = document.getElementById('shop-screen');
@@ -131,6 +147,8 @@ export function isShopOpen() {
 function itemDisabledReason(item, state) {
   if (item.category === 'vest') {
     if (state.vestCount >= state.maxVestSlots) return 'Réserve pleine';
+  } else if (item.category === 'utility') {
+    if ((state.grenades?.[item.kind] || 0) >= item.max) return 'Stock plein';
   } else if (item.category === 'ability') {
     if (state.maxVestSlots > BASE_MAX_VEST_SLOTS) return 'Déjà débloquée';
   } else if (item.category === 'weapon') {
@@ -164,7 +182,15 @@ function buildItemCard(item, state) {
   if (typeof item.damage === 'number') {
     const stats = document.createElement('div');
     stats.className = 'shop-item-stats';
-    stats.textContent = `${item.damage} dégâts / tir`;
+    const perShot = item.pellets > 1 ? `${item.pellets} × ${item.damage}` : `${item.damage}`;
+    stats.textContent =
+      `${perShot} dégâts / tir · chargeur ${item.magSize} · rechargement ${item.reloadTime.toFixed(1)} s`;
+    info.appendChild(stats);
+  }
+  if (item.category === 'utility') {
+    const stats = document.createElement('div');
+    stats.className = 'shop-item-stats';
+    stats.textContent = `En stock : ${state.grenades?.[item.kind] || 0} / ${item.max}`;
     info.appendChild(stats);
   }
 

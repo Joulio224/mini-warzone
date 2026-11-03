@@ -24,6 +24,8 @@ let socket = null;
 //   onCurrentVests, onVestSpawned, onVestRemoved,
 //   onCurrentWeaponPickups, onWeaponPickupSpawned, onWeaponPickupRemoved,
 //   onKillFeed, onScoreboard,
+//   onYourAmmo, onYourGrenades, onGrenadeSpawned, onGrenadeExploded, onDamageTaken,
+//   onPingPlaced, onPingRemoved,
 // }
 // groupId : identifiant du groupe Firestore actif (voir game-session.js), ou
 // null. Permet au serveur de mettre les membres d'un même groupe dans la
@@ -84,6 +86,10 @@ export function connectToServer(pseudo, appearance, groupId, mode, team, handler
 
   socket.on('hit-confirmed', (data) => {
     handlers.onHitConfirmed?.(data);
+  });
+  // D'où vient le coup qu'on vient d'encaisser (indicateur rouge autour du viseur)
+  socket.on('damage-taken', (data) => {
+    handlers.onDamageTaken?.(data);
   });
 
   socket.on('your-shield', ({ shield }) => {
@@ -146,6 +152,30 @@ export function connectToServer(pseudo, appearance, groupId, mode, team, handler
     handlers.onScoreboard?.(list);
   });
 
+  // Munitions (voir 'your-ammo' dans server.js), stock de grenades, et
+  // grenades en vol / explosées (le serveur simule le vol et décide de
+  // l'explosion, le client n'affiche que le vol).
+  socket.on('your-ammo', (data) => {
+    handlers.onYourAmmo?.(data);
+  });
+  socket.on('your-grenades', (data) => {
+    handlers.onYourGrenades?.(data);
+  });
+  socket.on('grenade-spawned', (data) => {
+    handlers.onGrenadeSpawned?.(data);
+  });
+  socket.on('grenade-exploded', (data) => {
+    handlers.onGrenadeExploded?.(data);
+  });
+
+  // Pings d'équipe posés depuis la carte (voir minimap.js)
+  socket.on('ping-placed', (data) => {
+    handlers.onPingPlaced?.(data);
+  });
+  socket.on('ping-removed', (data) => {
+    handlers.onPingRemoved?.(data);
+  });
+
   socket.on('connect_error', (error) => {
     console.error('[network] Connexion au serveur temps réel impossible :', error.message);
     handlers.onConnectError?.(error);
@@ -162,9 +192,40 @@ export function sendMove(position, rotationY) {
 // `slot` (0 ou 1) plutôt qu'un identifiant d'arme : le serveur retrouve
 // lui-même l'arme + la rareté équipées dans cet emplacement, il ne fait
 // jamais confiance au client pour les dégâts (voir server.js).
-export function sendShoot(origin, direction, slot) {
+// `directions` : la direction de chaque plomb, déjà dispersée par le client
+// (1 plomb pour la plupart des armes, 8 pour le fusil à pompe) — le serveur
+// plafonne la dispersion, voir 'shoot' dans server.js.
+export function sendShoot(origin, direction, slot, directions) {
   if (!socket?.connected) return;
-  socket.emit('shoot', { origin, direction, slot });
+  socket.emit('shoot', { origin, direction, slot, directions });
+}
+
+export function sendReload(slot) {
+  if (!socket?.connected) return;
+  socket.emit('reload', { slot });
+}
+
+export function sendCancelReload() {
+  if (!socket?.connected) return;
+  socket.emit('cancel-reload');
+}
+
+// kind : 'frag' ou 'smoke'. Le serveur calcule lui-même départ, vitesse et
+// minuterie ; on n'envoie que le type et la direction du regard.
+export function sendThrowGrenade(kind, direction) {
+  if (!socket?.connected) return;
+  socket.emit('throw-grenade', { kind, direction });
+}
+
+// Ping d'équipe à une position de la carte (x, z en mètres, coordonnées du jeu).
+export function sendPlacePing(x, z) {
+  if (!socket?.connected) return;
+  socket.emit('place-ping', { x, z });
+}
+
+export function sendRemovePing() {
+  if (!socket?.connected) return;
+  socket.emit('remove-ping');
 }
 
 export function sendUseVest() {

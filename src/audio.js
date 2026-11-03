@@ -202,11 +202,142 @@ export function createAudioEngine({
       tone(out, { type: 'sine', f0: 150, f1: 45, dur: 0.17, gain: 1 });
       noise(out, { filter: 'lowpass', f0: 700, f1: 200, dur: 0.28, gain: 0.25, delay: 0.03 });
     },
+    // Fusil à pompe : gros "boum" large, plus grave et plus long que le fusil,
+    // suivi d'un petit claquement de pompe.
+    shotgun: (out) => {
+      noise(out, { filter: 'lowpass', f0: 3000, f1: 400, dur: 0.22, gain: 1.1 });
+      tone(out, { type: 'sine', f0: 110, f1: 32, dur: 0.26, gain: 1.1 });
+      noise(out, { filter: 'bandpass', f0: 1200, f1: 500, q: 0.8, dur: 0.12, gain: 0.5 });
+      noise(out, { filter: 'highpass', f0: 2200, dur: 0.03, gain: 0.5, delay: 0.38 });
+      tone(out, { type: 'square', f0: 260, f1: 180, dur: 0.05, gain: 0.2, delay: 0.4 });
+    },
+    // Sniper : claquement sec très fort + longue traîne grave (écho lointain).
+    sniper: (out) => {
+      noise(out, { filter: 'highpass', f0: 1800, f1: 500, dur: 0.1, gain: 1.2 });
+      tone(out, { type: 'sine', f0: 190, f1: 38, dur: 0.3, gain: 1.2 });
+      noise(out, { filter: 'lowpass', f0: 900, f1: 120, dur: 0.6, gain: 0.35, delay: 0.05 });
+    },
   };
 
   function playShot(weaponId, at = null) {
     const build = SHOTS[weaponId] || SHOTS.pistol;
     play({ level: at ? 0.9 : 0.8, at, maxDistance: 90, duration: 0.35, build });
+  }
+
+  // --- Rechargement, grenades, ping, glissade ------------------------------
+
+  // Chargeur retiré, puis remis (clac) à la fin : `seconds` = durée totale.
+  function playReload(seconds = 1.5) {
+    const total = Math.max(0.6, seconds);
+    play({
+      level: 0.65,
+      duration: total + 0.2,
+      build: (out) => {
+        noise(out, { filter: 'highpass', f0: 2600, dur: 0.03, gain: 0.55 });
+        tone(out, { type: 'triangle', f0: 380, f1: 240, dur: 0.06, gain: 0.3 });
+        noise(out, { filter: 'highpass', f0: 2000, dur: 0.035, gain: 0.5, delay: total * 0.55 });
+        tone(out, { type: 'square', f0: 520, f1: 330, dur: 0.07, gain: 0.25, delay: total * 0.82 });
+        noise(out, { filter: 'highpass', f0: 3000, dur: 0.04, gain: 0.55, delay: total * 0.82 });
+      },
+    });
+  }
+
+  // Clic à vide : chargeur épuisé
+  function playDryFire() {
+    play({
+      level: 0.5,
+      duration: 0.1,
+      build: (out) => {
+        noise(out, { filter: 'highpass', f0: 3500, dur: 0.02, gain: 0.5 });
+        tone(out, { type: 'square', f0: 700, f1: 500, dur: 0.03, gain: 0.2 });
+      },
+    });
+  }
+
+  function playGrenadeThrow() {
+    play({
+      level: 0.6,
+      duration: 0.3,
+      build: (out) => {
+        noise(out, { filter: 'bandpass', f0: 500, f1: 1400, q: 1, dur: 0.18, gain: 0.45 });
+        tone(out, { type: 'triangle', f0: 220, f1: 320, dur: 0.12, gain: 0.2 });
+      },
+    });
+  }
+
+  // at : position de l'explosion (spatialisé), `distance` max d'audition assez grande
+  function playExplosion(at = null) {
+    play({
+      level: 1,
+      at,
+      maxDistance: 140,
+      duration: 1.4,
+      build: (out) => {
+        noise(out, { filter: 'lowpass', f0: 2500, f1: 120, dur: 0.9, gain: 1.3 });
+        tone(out, { type: 'sine', f0: 90, f1: 24, dur: 0.9, gain: 1.4 });
+        noise(out, { filter: 'highpass', f0: 1500, f1: 600, dur: 0.15, gain: 0.7 });
+        noise(out, { filter: 'lowpass', f0: 500, f1: 80, dur: 1.2, gain: 0.5, delay: 0.1 });
+      },
+    });
+  }
+
+  function playSmokePop(at = null) {
+    play({
+      level: 0.8,
+      at,
+      maxDistance: 60,
+      duration: 1.2,
+      build: (out) => {
+        tone(out, { type: 'triangle', f0: 180, f1: 70, dur: 0.12, gain: 0.7 });
+        noise(out, { filter: 'bandpass', f0: 2200, f1: 800, q: 0.7, dur: 0.9, gain: 0.55 });
+      },
+    });
+  }
+
+  // Ping d'équipe : deux notes qui montent, claires
+  function playPing() {
+    play({
+      level: 0.6,
+      duration: 0.4,
+      build: (out) => {
+        tone(out, { f0: 880, dur: 0.1, gain: 0.45 });
+        tone(out, { f0: 1175, dur: 0.18, gain: 0.45, delay: 0.09 });
+      },
+    });
+  }
+
+  function playSlide() {
+    play({
+      level: 0.5,
+      duration: 0.7,
+      build: (out) => {
+        noise(out, { filter: 'bandpass', f0: 1200, f1: 400, q: 0.8, dur: 0.6, gain: 0.45 });
+      },
+    });
+  }
+
+  // Souffle court quand l'endurance est vidée
+  function playExhausted() {
+    play({
+      level: 0.5,
+      duration: 0.5,
+      build: (out) => {
+        noise(out, { filter: 'bandpass', f0: 700, f1: 300, q: 1, dur: 0.4, gain: 0.5 });
+        tone(out, { type: 'sine', f0: 140, f1: 90, dur: 0.3, gain: 0.25 });
+      },
+    });
+  }
+
+  // Petit "tink" d'une douille qui touche le sol
+  function playShellDrop() {
+    play({
+      level: 0.3,
+      duration: 0.25,
+      build: (out) => {
+        tone(out, { type: 'sine', f0: 3300 + Math.random() * 500, f1: 2700, dur: 0.08, gain: 0.35 });
+        tone(out, { type: 'sine', f0: 4700, f1: 4100, dur: 0.05, gain: 0.15, delay: 0.015 });
+      },
+    });
   }
 
   function playHitMarker() {
@@ -323,9 +454,9 @@ export function createAudioEngine({
   }
 
   // at : position des pieds de l'autre joueur (omise pour tes propres pas)
-  function playFootstep({ at = null, crouching = false } = {}) {
+  function playFootstep({ at = null, crouching = false, sprinting = false } = {}) {
     play({
-      level: (at ? 0.5 : 0.35) * (crouching ? 0.45 : 1),
+      level: (at ? 0.5 : 0.35) * (crouching ? 0.45 : 1) * (sprinting ? 1.35 : 1),
       at,
       maxDistance: 24,
       duration: 0.12,
@@ -364,6 +495,15 @@ export function createAudioEngine({
     setVolume,
     setListener,
     playShot,
+    playReload,
+    playDryFire,
+    playGrenadeThrow,
+    playExplosion,
+    playSmokePop,
+    playPing,
+    playSlide,
+    playExhausted,
+    playShellDrop,
     playHitMarker,
     playKill,
     playHurt,

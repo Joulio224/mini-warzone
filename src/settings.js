@@ -49,6 +49,30 @@ export const SETTING_DEFS = [
     type: 'toggle',
     default: true,
   },
+  {
+    id: 'dayNight',
+    label: 'Cycle jour / nuit (sinon, toujours le matin)',
+    type: 'toggle',
+    default: true,
+  },
+  {
+    id: 'mist',
+    label: 'Brume au ras du sol',
+    type: 'toggle',
+    default: true,
+  },
+  {
+    id: 'sharpShadows',
+    label: 'Ombres nettes près de toi (cascade) — recharger la page après changement',
+    type: 'toggle',
+    default: true,
+  },
+  {
+    id: 'impactEffects',
+    label: 'Effets d\'impact (étincelles, poussière, trous, douilles)',
+    type: 'toggle',
+    default: true,
+  },
 ];
 
 export const DEFAULT_SETTINGS = Object.fromEntries(SETTING_DEFS.map((d) => [d.id, d.default]));

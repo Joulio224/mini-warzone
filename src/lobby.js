@@ -151,8 +151,12 @@ function updateMenuHelp() {
   if (!menuHelpEl) return;
   const k = getKeybinds();
   menuHelpEl.textContent =
-    `${describeMovementKeys(k)} pour bouger, souris pour regarder, clic pour tirer, ` +
+    `${describeMovementKeys(k)} pour bouger, ${keyLabel(k.sprint)} pour courir ` +
+    `(+ ${keyLabel(k.crouch)} en courant : glissade), souris pour regarder, clic pour tirer, ` +
+    `${keyLabel(k.reload)} pour recharger, ` +
     `molette ou ${keyLabel(k.weaponSlot1)}/${keyLabel(k.weaponSlot2)} pour changer d'arme, ` +
+    `${keyLabel(k.grenadeFrag)}/${keyLabel(k.grenadeSmoke)} pour lancer une grenade/un fumigène, ` +
+    `${keyLabel(k.map)} pour la carte (clic = ping d'équipe), ` +
     `${keyLabel(k.pickupWeapon)} pour ramasser une arme au sol, ` +
     `${keyLabel(k.useVest)} pour utiliser un gilet, ${keyLabel(k.shop)} pour la boutique, ` +
     `${keyLabel(k.scoreboard)} (maintenu) pour les scores, Échap pour sortir`;

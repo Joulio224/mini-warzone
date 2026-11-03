@@ -142,23 +142,82 @@
     .sb-table .sb-num { text-align: right; width: 64px; font-variant-numeric: tabular-nums; }
     .sb-table tr.mine td { background: rgba(255, 210, 63, 0.14); font-weight: 700; }
     .sb-dot { display: inline-block; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: currentColor; }
+    /* --- Viseur : un point central + 4 traits fins qui le "pointent". Hanche :
+       les traits sont écartés (écart = dispersion réelle de l'arme, voir
+       updateCrosshair() dans main.js) ; en visant, ils se resserrent jusqu'à
+       frôler le point et former un petit plus. Traits unis, sans contour. --- */
     #crosshair {
       position: fixed;
       top: 50%;
       left: 50%;
-      width: 6px;
-      height: 6px;
-      margin: -3px 0 0 -3px;
-      border-radius: 50%;
-      background: white;
-      mix-blend-mode: difference;
+      width: 0;
+      height: 0;
       pointer-events: none;
       z-index: 5;
-      transition: transform 0.08s ease, background 0.08s ease;
+      --gap: 9px;          /* écart entre le bord du point et le début des traits (réglé par le jeu à chaque image) */
+      --hit-extra: 0px;    /* réservé (aucun décalage à la touche : le + reste exact en visée) */
+      --len: 12.4px;       /* longueur d'un trait */
+      --thick: 1.35px;     /* épaisseur d'un trait */
+      --ch-color: #ffffff;
     }
-    #crosshair.hit {
-      transform: scale(2.4);
-      background: #ffb400;
+    #crosshair .ch-dot {
+      position: absolute;
+      width: 2px;
+      height: 2px;
+      margin: -1px 0 0 -1px;
+      border-radius: 50%;
+      background: var(--ch-color);
+      transition: background 0.08s ease;
+    }
+    #crosshair .ch-line {
+      position: absolute;
+      background: var(--ch-color);
+      transition: background 0.08s ease;
+    }
+    #crosshair .ch-t { width: var(--thick); height: var(--len); left: calc(var(--thick) / -2); top: calc(-1 * (var(--gap) + var(--hit-extra) + var(--len))); }
+    #crosshair .ch-b { width: var(--thick); height: var(--len); left: calc(var(--thick) / -2); top: calc(var(--gap) + var(--hit-extra)); }
+    #crosshair .ch-l { height: var(--thick); width: var(--len); top: calc(var(--thick) / -2); left: calc(-1 * (var(--gap) + var(--hit-extra) + var(--len))); }
+    #crosshair .ch-r { height: var(--thick); width: var(--len); top: calc(var(--thick) / -2); left: calc(var(--gap) + var(--hit-extra)); }
+    #crosshair.hit { --ch-color: #ffb400; } /* touche confirmée : les traits passent à l orange, sans bouger */
+
+    /* --- Effets de combat : chiffres de dégâts, direction des coups, vie basse --- */
+    #damage-numbers, #damage-indicators { position: fixed; inset: 0; pointer-events: none; z-index: 8; overflow: hidden; }
+    .dmg-number {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      font: 800 1.05rem system-ui, sans-serif;
+      color: #fff;
+      -webkit-text-stroke: 3px rgba(0, 0, 0, 0.75);
+      paint-order: stroke fill;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+      font-variant-numeric: tabular-nums;
+      animation: dmg-float 0.85s ease-out forwards;
+    }
+    .dmg-number.big { font-size: 1.35rem; }
+    .dmg-number.headshot { color: #ffd23f; font-size: 1.5rem; }
+    .dmg-number.headshot::after { content: " ✦"; font-size: 0.8em; }
+    @keyframes dmg-float {
+      0% { opacity: 0; transform: translate(-50%, -30%) scale(0.6); }
+      15% { opacity: 1; transform: translate(-50%, -60%) scale(1.15); }
+      100% { opacity: 0; transform: translate(-50%, -190%) scale(1); }
+    }
+    .dmg-indicator { position: absolute; left: 50%; top: 50%; will-change: transform, opacity; }
+    .dmg-indicator i {
+      display: block;
+      width: 96px;
+      height: 30px;
+      border-top: 6px solid rgba(255, 52, 52, 0.95);
+      border-radius: 96px 96px 0 0 / 30px 30px 0 0;
+      filter: drop-shadow(0 0 7px rgba(255, 0, 0, 0.85));
+      margin-left: -48px;
+    }
+    #low-hp-vignette {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 3;
+      opacity: 0;
+      background: radial-gradient(ellipse at center, rgba(120, 0, 0, 0) 45%, rgba(150, 0, 0, 0.35) 75%, rgba(110, 0, 0, 0.85) 100%);
     }
 
     /* --- HUD : vie, dégâts, écran de mort ------------------------------- */
@@ -1052,6 +1111,162 @@
       background: transparent;
       flex-shrink: 0;
     }
+
+    /* --- Munitions, grenades, endurance, lunette ------------------------ */
+    #ammo-hud {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: white;
+      font-family: system-ui, sans-serif;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+      position: relative;
+      overflow: hidden;
+      pointer-events: none;
+    }
+    #ammo-count { font-size: 1.7rem; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+    #ammo-mag { font-size: 0.9rem; opacity: 0.65; font-variant-numeric: tabular-nums; }
+    #ammo-state { margin-left: auto; font-size: 0.7rem; letter-spacing: 1px; text-transform: uppercase; opacity: 0.85; }
+    #ammo-hud.low #ammo-count { color: #ff8f3a; }
+    #ammo-hud.empty #ammo-count { color: #e63946; }
+    #ammo-hud.reloading #ammo-count { opacity: 0.45; }
+    #reload-bar {
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: 3px;
+      background: rgba(255, 255, 255, 0.12);
+      opacity: 0;
+    }
+    #ammo-hud.reloading #reload-bar { opacity: 1; }
+    #reload-fill { height: 100%; width: 0%; background: #ffd23f; }
+
+    #grenade-hud { display: flex; gap: 6px; pointer-events: none; }
+    .gren-chip {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: white;
+      font-family: system-ui, sans-serif;
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    }
+    .gren-chip.empty { opacity: 0.4; }
+    .gren-chip .gren-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .gren-chip[data-kind="frag"] .gren-dot { background: #7fb069; box-shadow: 0 0 5px #7fb069; }
+    .gren-chip[data-kind="smoke"] .gren-dot { background: #b8c2cc; box-shadow: 0 0 5px #b8c2cc; }
+    .gren-chip .inv-key { width: 18px; height: 18px; font-size: 0.72rem; }
+    .gren-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+    #stamina-bar {
+      position: fixed;
+      left: 16px;
+      bottom: 42px;
+      width: 180px;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      overflow: hidden;
+      z-index: 6;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    #stamina-bar.show { opacity: 1; }
+    #stamina-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #ffd23f, #fff1a8); }
+    #stamina-bar.exhausted #stamina-fill { background: #e07b39; }
+
+    #scope-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 4;
+      pointer-events: none;
+      display: none;
+      background:
+        linear-gradient(#000, #000) center / 2px 100% no-repeat,
+        linear-gradient(#000, #000) center / 100% 2px no-repeat,
+        radial-gradient(circle at center, transparent 0, transparent 34vmin, rgba(0, 0, 0, 0.93) 34.4vmin);
+    }
+    #scope-overlay.show { display: block; }
+
+    #blast-flash {
+      position: fixed;
+      inset: 0;
+      z-index: 9;
+      pointer-events: none;
+      background: #fff6dc;
+      opacity: 0;
+    }
+
+    /* --- Carte + pings d'équipe ----------------------------------------- */
+    #map-screen {
+      background: rgba(8, 12, 18, 0.74);
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px;
+    }
+    #map-screen[hidden] { display: none; }
+    .map-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      width: 100%;
+      max-width: 880px;
+      font-size: 0.85rem;
+    }
+    .map-header h1 { margin: 0; font-size: 1.1rem; letter-spacing: 1px; text-transform: uppercase; }
+    #map-hint { opacity: 0.7; text-align: right; }
+    #map-canvas {
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    #ping-layer { position: fixed; inset: 0; z-index: 7; pointer-events: none; overflow: hidden; }
+    .ping-marker {
+      position: absolute;
+      left: 0; top: 0;
+      will-change: transform;
+      --ping-color: #ffd23f;
+    }
+    .ping-marker-icon {
+      position: absolute;
+      left: -9px; top: -9px;
+      width: 18px; height: 18px;
+      background: var(--ping-color);
+      border: 2px solid rgba(0, 0, 0, 0.75);
+      transform: rotate(45deg);
+      box-shadow: 0 0 10px var(--ping-color);
+      animation: ping-pulse 1.2s ease-in-out infinite;
+    }
+    .ping-marker-label {
+      position: absolute;
+      left: 0; top: 16px;
+      transform: translateX(-50%);
+      white-space: nowrap;
+      font: 700 0.72rem system-ui, sans-serif;
+      color: #fff;
+      text-shadow: 0 1px 3px #000, 0 0 3px #000;
+    }
+    .ping-marker.offscreen .ping-marker-icon { opacity: 0.75; transform: rotate(45deg) scale(0.8); animation: none; }
+    .ping-marker.fading { opacity: 0.55; }
+    @keyframes ping-pulse {
+      0%, 100% { transform: rotate(45deg) scale(1); }
+      50% { transform: rotate(45deg) scale(1.2); }
+    }
   </style>
 </head>
 <body>
@@ -1059,8 +1274,15 @@
   <div id="pickup-prompt"></div>
   <div id="kill-feed"></div>
   <div id="scoreboard" hidden></div>
-  <div id="crosshair"></div>
+  <div id="scope-overlay"></div>
+  <div id="crosshair"><i class="ch-dot"></i><i class="ch-line ch-t"></i><i class="ch-line ch-b"></i><i class="ch-line ch-l"></i><i class="ch-line ch-r"></i></div>
   <div id="damage-flash"></div>
+  <div id="low-hp-vignette"></div>
+  <div id="damage-numbers"></div>
+  <div id="damage-indicators"></div>
+  <div id="blast-flash"></div>
+  <div id="ping-layer"></div>
+  <div id="stamina-bar"><div id="stamina-fill"></div></div>
 
   <div id="hud">
     <span id="team-label"></span>
@@ -1075,6 +1297,17 @@
     <div id="slot-weapon2" class="inv-slot empty">
       <span class="inv-key">2</span><span class="inv-rarity-dot"></span><span class="inv-label">Vide</span>
     </div>
+    <!-- Munitions de l'arme en main + rechargement (touche R) -->
+    <div id="ammo-hud">
+      <span id="ammo-count">12</span><span id="ammo-mag">/ 12</span>
+      <span id="ammo-state"></span>
+      <div id="reload-bar"><div id="reload-fill"></div></div>
+    </div>
+    <!-- Grenades et fumigènes en stock (touches G / H), voir updateGrenadeUI() -->
+    <div id="grenade-hud">
+      <div class="gren-chip empty" data-kind="frag"><span class="inv-key" id="gren-key-frag">G</span><span class="gren-dot"></span>Grenade<span class="gren-count" id="gren-count-frag">0</span></div>
+      <div class="gren-chip empty" data-kind="smoke"><span class="inv-key" id="gren-key-smoke">H</span><span class="gren-dot"></span>Fumi.<span class="gren-count" id="gren-count-smoke">0</span></div>
+    </div>
     <!-- Stock de gilets en réserve (touche P pour en utiliser un), rempli
          dynamiquement par updateVestStockUI() dans main.js. -->
     <div id="vest-stock"></div>
@@ -1084,6 +1317,16 @@
   <div id="death-screen" hidden>
     <h2>Éliminé</h2>
     <p id="respawn-countdown">Réapparition dans 3s…</p>
+  </div>
+
+  <!-- Carte : s'ouvre/se ferme avec la touche M (réglable). Clic gauche = ping
+       d'équipe, clic droit = retirer le sien — voir src/minimap.js. -->
+  <div id="map-screen" class="screen" hidden>
+    <div class="map-header">
+      <h1>Carte</h1>
+      <span id="map-hint">Clic gauche : ping d'équipe · Clic droit : retirer mon ping</span>
+    </div>
+    <canvas id="map-canvas"></canvas>
   </div>
 
   <!-- Boutique : s'ouvre et se ferme avec la touche B, depuis n'importe où
@@ -1097,6 +1340,7 @@
       <div class="tabs">
         <button type="button" class="tab active" data-shop-tab="weapon">Armes</button>
         <button type="button" class="tab" data-shop-tab="vest">Gilets</button>
+        <button type="button" class="tab" data-shop-tab="utility">Équipement</button>
         <button type="button" class="tab" data-shop-tab="ability">Capacités</button>
       </div>
       <div id="shop-items" class="shop-items"></div>
@@ -1254,7 +1498,7 @@
 
   <div id="menu">
     <h1>Mini Warzone</h1>
-    <p id="menu-help">ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, 1/2 pour changer d'arme, P pour utiliser un gilet, B pour la boutique, Échap pour sortir</p>
+    <p id="menu-help">ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, R pour recharger, Maj pour courir, G/H pour les grenades, M pour la carte, 1/2 pour changer d'arme, P pour utiliser un gilet, B pour la boutique, Échap pour sortir</p>
     <button id="play-button" disabled>Chargement…</button>
     <button id="quit-button" class="secondary" type="button">Quitter la partie</button>
   </div>

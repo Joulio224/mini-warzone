@@ -13,6 +13,11 @@ import {
   sendUseVest,
   sendBuyItem,
   sendCollectWeapon,
+  sendReload,
+  sendCancelReload,
+  sendThrowGrenade,
+  sendPlacePing,
+  sendRemovePing,
   getMyId,
 } from './network.js';
 import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
@@ -22,6 +27,33 @@ import { getKeybinds, keyLabel } from './keybinds.js';
 import { getSettings } from './settings.js';
 import { audio } from './audio.js';
 import { createScoreboard } from './scoreboard.js';
+import {
+  WEAPON_DEFS,
+  WEAPON_ORDER,
+  GRENADE_DEFS,
+  GRENADE_STEP,
+  stepGrenade,
+  currentSpread,
+  BLOOM_PER_SHOT,
+  BLOOM_MAX,
+  BLOOM_DECAY_PER_SEC,
+  SPRINT_MULT,
+  STAMINA_MAX,
+  STAMINA_DRAIN_PER_SEC,
+  STAMINA_REGEN_PER_SEC,
+  STAMINA_REGEN_DELAY,
+  STAMINA_MIN_TO_RESUME,
+  SLIDE_DURATION,
+  SLIDE_SPEED_START,
+  SLIDE_SPEED_END,
+  SLIDE_COOLDOWN,
+  SLIDE_EYE_HEIGHT,
+} from './weapons.js';
+import { createMinimap } from './minimap.js';
+import { createAmbiance } from './ambiance.js';
+import { createFx } from './fx.js';
+import { createHudFx } from './hudfx.js';
+import { computeMapOffsetY, disableTallWallShadows } from './map-align.js';
 // Toutes les données de la map qui ne sont pas de la géométrie visuelle pure
 // (boîtes de collision, spawns d'équipe, lumières d'ambiance) — doit rester identique à
 // mini-warzone-server/map-data.json. La géométrie visible, elle, vient de
@@ -32,41 +64,8 @@ import mapData from './map-data.json';
 // Scène, caméra, rendu
 // ---------------------------------------------------------------------------
 const scene = new THREE.Scene();
-const SKY_TOP_COLOR = 0x4a90d9;
-const SKY_BOTTOM_COLOR = 0xcfe8f7;
-scene.fog = new THREE.Fog(SKY_BOTTOM_COLOR, 20, 150);
-
-// Ciel en dégradé (une grosse sphère retournée, avec un shader simple qui
-// mélange deux couleurs du zénith vers l'horizon) — beaucoup plus vivant
-// qu'un fond uni, pour un coût de performance quasi nul.
-const skyMesh = new THREE.Mesh(
-  new THREE.SphereGeometry(400, 24, 16),
-  new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    uniforms: {
-      topColor: { value: new THREE.Color(SKY_TOP_COLOR) },
-      bottomColor: { value: new THREE.Color(SKY_BOTTOM_COLOR) },
-    },
-    vertexShader: `
-      varying vec3 vWorldPosition;
-      void main() {
-        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-        vWorldPosition = worldPosition.xyz;
-        gl_Position = projectionMatrix * viewMatrix * worldPosition;
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vWorldPosition;
-      uniform vec3 topColor;
-      uniform vec3 bottomColor;
-      void main() {
-        float h = normalize(vWorldPosition).y * 0.5 + 0.5;
-        gl_FragColor = vec4(mix(bottomColor, topColor, h), 1.0);
-      }
-    `,
-  })
-);
-scene.add(skyMesh);
+// Ciel, brouillard et lumières : voir ambiance.js (créé plus bas, une fois la
+// caméra et le moteur de rendu prêts).
 
 const camera = new THREE.PerspectiveCamera(
   75,
@@ -80,6 +79,9 @@ const camera = new THREE.PerspectiveCamera(
 const AIM_FOV_RATIO = 50 / 75;
 let BASE_FOV = 75;
 let AIM_FOV = 50;
+// Sensibilité choisie dans Paramètres : la vitesse réelle de la souris en est
+// déduite à chaque image selon le zoom (plus on zoome, plus on ralentit).
+let baseSensitivity = 1;
 camera.position.set(0, 1.7, 5); // 1.7 ~ hauteur d'yeux debout
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -107,27 +109,37 @@ composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
 // ---------------------------------------------------------------------------
-// Lumières
+// Ambiance : cycle jour/nuit, ciel, brouillard bas + brume, ombres en cascade
+// (voir ambiance.js). Les réglages sont lus au chargement de la page ; les
+// ombres en cascade ne peuvent changer qu'à ce moment-là.
 // ---------------------------------------------------------------------------
-const hemiLight = new THREE.HemisphereLight(0xbfd9ff, 0x3a2f28, 1.0);
-scene.add(hemiLight);
+const initialSettings = getSettings();
+const ambiance = createAmbiance({
+  scene,
+  camera,
+  renderer,
+  cycle: initialSettings.dayNight,
+  mist: initialSettings.mist,
+  sharpShadows: initialSettings.sharpShadows,
+});
 
-const sunLight = new THREE.DirectionalLight(0xfff2d9, 1.7);
-sunLight.position.set(30, 40, 10);
-sunLight.castShadow = true;
-sunLight.shadow.mapSize.set(2048, 2048);
-sunLight.shadow.camera.left = -50;
-sunLight.shadow.camera.right = 50;
-sunLight.shadow.camera.top = 50;
-sunLight.shadow.camera.bottom = -50;
-sunLight.shadow.bias = -0.0005;
-scene.add(sunLight);
-
-// Lumière de "remplissage" douce et froide, opposée au soleil, pour éviter
-// que les zones à l'ombre soient totalement noires.
-const fillLight = new THREE.DirectionalLight(0x8fb4ff, 0.35);
-fillLight.position.set(-25, 15, -15);
-scene.add(fillLight);
+// Effets de tir (étincelles, poussière, trous, douilles, traceurs) et effets
+// d'interface de combat (chiffres de dégâts, direction des coups, vie basse).
+const fx = createFx({
+  scene,
+  camera,
+  renderer,
+  getDaylight: () => ambiance.getDaylight(),
+  getFloorY: () => lastGroundY, // les douilles tombent au niveau du sol sous le joueur
+  onShellLand: () => audio.playShellDrop(),
+});
+fx.setEnabled(initialSettings.impactEffects);
+const hudFx = createHudFx({
+  camera,
+  numbersLayerEl: document.getElementById('damage-numbers'),
+  indicatorLayerEl: document.getElementById('damage-indicators'),
+  vignetteEl: document.getElementById('low-hp-vignette'),
+});
 
 // Sol de secours tant que la map n'est pas chargée (évite de tomber dans le vide)
 const fallbackGround = new THREE.Mesh(
@@ -204,11 +216,16 @@ mapLoader.load(
     // On conserve uniquement le décalage vertical nécessaire pour placer
     // le sol à Y=0 et aligner la carte avec map-colliders.glb.
     gltf.scene.rotation.set(0, 0, 0);
-    gltf.scene.position.set(0, 46, 0);
     gltf.scene.scale.set(1, 1, 1);
+    // Alignement vertical mesuré plutôt qu'écrit en dur (voir map-align.js) : le
+    // sol visible doit être à Y = 0, comme celui des collisions.
+    gltf.scene.position.set(0, 0, 0);
+    gltf.scene.position.set(0, computeMapOffsetY(gltf.scene), 0);
     scene.add(gltf.scene);
     scene.remove(fallbackGround);
     gltf.scene.updateMatrixWorld(true);
+    disableTallWallShadows(gltf.scene); // les murs d'enceinte de 100 m n'ombrent pas l'arène
+    ambiance.registerObject(gltf.scene);
 
     const walkableMeshes = [];
     gltf.scene.traverse((child) => {
@@ -325,12 +342,15 @@ scene.add(controls.getObject());
 // cette fonction est appelée dès le chargement du fichier.
 function applySettings() {
   const settings = getSettings();
-  controls.pointerSpeed = settings.sensitivity;
+  baseSensitivity = settings.sensitivity;
+  controls.pointerSpeed = baseSensitivity;
   BASE_FOV = settings.fov;
   AIM_FOV = settings.fov * AIM_FOV_RATIO;
   camera.fov = BASE_FOV; // la boucle animate() réajuste ensuite vers le zoom si on vise
   camera.updateProjectionMatrix();
   bloomPass.enabled = settings.bloom;
+  ambiance.setOptions({ cycle: settings.dayNight, mist: settings.mist });
+  fx.setEnabled(settings.impactEffects);
   audio.setVolume(settings.volume);
 }
 applySettings();
@@ -364,7 +384,7 @@ controls.addEventListener('unlock', () => {
   // Si c'est la boutique qui vient de déverrouiller le pointeur (touche B),
   // on ne veut PAS afficher le menu "Cliquer pour jouer" par-dessus — voir
   // la section "Boutique" plus bas.
-  if (isShopOpen()) return;
+  if (isShopOpen() || minimap.isOpen()) return;
   menuEl.style.display = 'flex';
 });
 
@@ -376,11 +396,14 @@ controls.addEventListener('unlock', () => {
 // sont calculés que côté serveur, seule autorité sur le sujet. Touches
 // 1/2/3 pour changer d'arme.
 // ---------------------------------------------------------------------------
-const WEAPONS = [
-  { id: 'pistol', name: 'Pistolet', cooldown: 0.35, autoFire: false, color: 0x2b2b2b },
-  { id: 'smg', name: 'Mitraillette', cooldown: 0.09, autoFire: true, color: 0x333d47 },
-  { id: 'rifle', name: 'Fusil', cooldown: 0.18, autoFire: true, color: 0x3a3226 },
-];
+// Liste dérivée de weapons.js (source de vérité : stats, chargeurs, dispersion).
+const WEAPONS = WEAPON_ORDER.map((id) => ({
+  id,
+  name: WEAPON_DEFS[id].name,
+  cooldown: WEAPON_DEFS[id].cooldown,
+  autoFire: WEAPON_DEFS[id].autoFire,
+  color: WEAPON_DEFS[id].color,
+}));
 
 function buildPistolModel(color) {
   const group = new THREE.Group();
@@ -441,7 +464,71 @@ function buildRifleModel(color) {
   return { group, material: mat };
 }
 
-const WEAPON_BUILDERS = { pistol: buildPistolModel, smg: buildSmgModel, rifle: buildRifleModel };
+function buildShotgunModel(color) {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.25 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.42), mat);
+  group.add(body);
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.6), mat);
+  barrel.position.set(0, 0.025, -0.48);
+  group.add(barrel);
+  const tube = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 0.5), mat);
+  tube.position.set(0, -0.03, -0.43);
+  group.add(tube);
+  const pump = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.06, 0.2), mat);
+  pump.position.set(0, -0.045, -0.3);
+  group.add(pump);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.14, 0.06), mat);
+  grip.position.set(0, -0.1, 0.12);
+  grip.rotation.x = 0.35;
+  group.add(grip);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.09, 0.3), mat);
+  stock.position.set(0, -0.01, 0.34);
+  group.add(stock);
+  return { group, material: mat };
+}
+
+function buildSniperModel(color) {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.35 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.1, 0.6), mat);
+  group.add(body);
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.028, 0.55), mat);
+  barrel.position.set(0, 0.02, -0.55);
+  group.add(barrel);
+  // Lunette : un cylindre posé sur le dessus, deux anneaux aux extrémités
+  const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.3, 12), mat);
+  scope.rotation.x = Math.PI / 2;
+  scope.position.set(0, 0.11, -0.05);
+  group.add(scope);
+  [-0.17, 0.07].forEach((z) => {
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.038, 0.03, 12), mat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(0, 0.11, z);
+    group.add(ring);
+  });
+  const magazine = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.12, 0.07), mat);
+  magazine.position.set(0, -0.11, -0.05);
+  group.add(magazine);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.14, 0.06), mat);
+  grip.position.set(0, -0.09, 0.2);
+  grip.rotation.x = 0.35;
+  group.add(grip);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.3), mat);
+  stock.position.set(0, 0, 0.42);
+  group.add(stock);
+  return { group, material: mat };
+}
+
+const WEAPON_BUILDERS = {
+  pistol: buildPistolModel,
+  smg: buildSmgModel,
+  rifle: buildRifleModel,
+  shotgun: buildShotgunModel,
+  sniper: buildSniperModel,
+};
+// Position (Z local) de la bouche du canon : là où apparaît le flash de tir.
+const MUZZLE_Z = { pistol: -0.3, smg: -0.42, rifle: -0.6, shotgun: -0.8, sniper: -0.98 };
 
 // Teinte appliquée au(x) matériau(x) de l'arme en main selon sa rareté —
 // "grise/bleutée/rougie" comme demandé : gris = couleur d'origine (aucune
@@ -483,14 +570,19 @@ function applyRarityTint(weaponId, rarity) {
 // ---------------------------------------------------------------------------
 // Stuff au sol (voir dropLoot dans server.js) : armes et gilets tombés à la
 // mort d'un joueur. Rien n'est semé sur la carte au hasard — tout vient
-// d'une mort, et un objet reste au sol jusqu'à ce que quelqu'un le ramasse.
+// d'une mort. Un objet tombe, reste 1 minute au sol (compté depuis son
+// atterrissage, c'est le serveur qui décide : voir armLootTimer dans server.js)
+// puis disparaît ; il clignote pendant les 5 dernières secondes.
 // Les gilets se ramassent tout seuls en marchant dessus (le serveur s'en
 // charge ; côté client, rien à faire à part afficher/retirer leur mesh). Les
 // armes demandent la touche E (configurable, voir keybinds.js) à portée —
 // voir findClosestGroundWeapon et la mise à jour du prompt dans animate().
 // ---------------------------------------------------------------------------
-const groundVestMeshes = new Map(); // vestId -> THREE.Object3D
-const groundWeaponPickups = new Map(); // weaponPickupId -> { mesh, weaponId, position }
+const groundVestMeshes = new Map(); // vestId -> entrée de butin (voir createLootEntry)
+const groundWeaponPickups = new Map(); // weaponPickupId -> { ...entrée de butin, weaponId, position }
+const LOOT_BLINK_MS = 5000; // clignotement avant disparition
+const LOOT_BOUNCE_MS = 300; // petit rebond à l'atterrissage (purement visuel)
+const PICKUP_VERTICAL_REACH = 1.2; // doit rester identique à server.js
 const WEAPON_PICKUP_INTERACT_RADIUS = 1.8; // doit rester proche de WEAPON_PICKUP_RADIUS côté serveur
 
 function buildVestPickupMesh() {
@@ -534,17 +626,62 @@ function buildWeaponPickupMesh(weaponId, rarity) {
   return holder;
 }
 
-function addGroundVest({ id, position }) {
+// Suivi d'un objet au sol : sa chute (de fromY jusqu'à position.y, durée
+// fallMs, calculées par le serveur) et son échéance. `position` est la position
+// FINALE, au sol. Sans infos de chute (ancien serveur), l'objet est posé direct.
+function createLootEntry(mesh, position, { fromY, fallMs, expiresInMs } = {}) {
+  const now = performance.now();
+  return {
+    mesh,
+    position,
+    fromY: Number.isFinite(fromY) ? fromY : position.y,
+    fallMs: Number.isFinite(fallMs) ? fallMs : 0,
+    spawnedAt: now,
+    // échéance : sans info du serveur, aucune disparition programmée côté client
+    expiresAt: Number.isFinite(expiresInMs) ? now + expiresInMs : Infinity,
+    spin: (Math.random() < 0.5 ? -1 : 1) * (4 + Math.random() * 3),
+  };
+}
+
+// Chute (accélérée), rebond, puis clignotement final. Appelée à chaque image.
+function updateLootEntry(entry, now) {
+  const elapsed = now - entry.spawnedAt;
+  const baseY = entry.position.y;
+  if (elapsed < entry.fallMs) {
+    const k = elapsed / entry.fallMs;
+    entry.mesh.position.y = baseY + (entry.fromY - baseY) * (1 - k * k);
+    entry.mesh.rotation.y += entry.spin * 0.016 * (1 - k);
+  } else {
+    const bounce = (elapsed - entry.fallMs) / LOOT_BOUNCE_MS;
+    entry.mesh.position.y = bounce < 1 ? baseY + 0.1 * Math.sin(Math.PI * bounce) * (1 - bounce) : baseY;
+  }
+  const left = entry.expiresAt - now;
+  entry.mesh.visible = left > LOOT_BLINK_MS || Math.floor(now / 160) % 2 === 0;
+}
+
+function updateGroundLoot(now) {
+  groundVestMeshes.forEach((entry, id) => {
+    if (now > entry.expiresAt + 3000) removeGroundVest(id); // filet de sécurité si l'événement de retrait s'est perdu
+    else updateLootEntry(entry, now);
+  });
+  groundWeaponPickups.forEach((entry, id) => {
+    if (now > entry.expiresAt + 3000) removeGroundWeaponPickup(id);
+    else updateLootEntry(entry, now);
+  });
+}
+
+function addGroundVest({ id, position, fromY, fallMs, expiresInMs }) {
   if (groundVestMeshes.has(id)) return;
   const mesh = buildVestPickupMesh();
-  mesh.position.set(position.x, position.y, position.z);
+  const entry = createLootEntry(mesh, position, { fromY, fallMs, expiresInMs });
+  mesh.position.set(position.x, entry.fromY, position.z);
   scene.add(mesh);
-  groundVestMeshes.set(id, mesh);
+  groundVestMeshes.set(id, entry);
 }
 function removeGroundVest(id) {
-  const mesh = groundVestMeshes.get(id);
-  if (!mesh) return;
-  scene.remove(mesh);
+  const entry = groundVestMeshes.get(id);
+  if (!entry) return;
+  scene.remove(entry.mesh);
   groundVestMeshes.delete(id);
 }
 function handleCurrentVests(items) {
@@ -554,12 +691,13 @@ function handleVestRemoved({ id }) {
   removeGroundVest(id);
 }
 
-function addGroundWeaponPickup({ id, weaponId, rarity, position }) {
+function addGroundWeaponPickup({ id, weaponId, rarity, position, fromY, fallMs, expiresInMs }) {
   if (groundWeaponPickups.has(id)) return;
   const mesh = buildWeaponPickupMesh(weaponId, rarity);
-  mesh.position.set(position.x, position.y, position.z);
+  const entry = createLootEntry(mesh, position, { fromY, fallMs, expiresInMs });
+  mesh.position.set(position.x, entry.fromY, position.z);
   scene.add(mesh);
-  groundWeaponPickups.set(id, { mesh, weaponId, position });
+  groundWeaponPickups.set(id, { ...entry, weaponId });
 }
 function removeGroundWeaponPickup(id) {
   const entry = groundWeaponPickups.get(id);
@@ -579,10 +717,9 @@ function findClosestGroundWeapon() {
   let closestId = null;
   let closestDist = WEAPON_PICKUP_INTERACT_RADIUS;
   groundWeaponPickups.forEach(({ position }, id) => {
-    const dx = camera.position.x - position.x;
-    const dy = camera.position.y - position.y;
-    const dz = camera.position.z - position.z;
-    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    // portée horizontale + fenêtre verticale : les objets sont au sol, pas à hauteur des yeux
+    const dist = Math.hypot(camera.position.x - position.x, camera.position.z - position.z);
+    if (Math.abs(camera.position.y - 0.9 - position.y) > PICKUP_VERTICAL_REACH) return;
     if (dist < closestDist) {
       closestDist = dist;
       closestId = id;
@@ -599,16 +736,38 @@ weaponModels[currentWeaponIndex].group.visible = true;
 
 // Petit flash bref au canon à chaque tir — attaché à l'arme donc suit
 // automatiquement ses mouvements (recul, visée, bob).
-const muzzleFlashLight = new THREE.PointLight(0xffe08a, 0, 3, 2);
+const muzzleFlashLight = new THREE.PointLight(0xffe08a, 0, 5, 2);
 muzzleFlashLight.position.set(0, 0.02, -0.5);
 weaponGroup.add(muzzleFlashLight);
+// Gerbe de flamme dessinée à la bouche du canon (additive, taille et angle au
+// hasard à chaque tir) : plus lisible qu'une simple lueur.
+const muzzleFlashSprite = new THREE.Sprite(
+  new THREE.SpriteMaterial({
+    map: fx.getFlashTexture(),
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    fog: false,
+    opacity: 0,
+  })
+);
+muzzleFlashSprite.position.set(0, 0.02, -0.5);
+muzzleFlashSprite.visible = false;
+weaponGroup.add(muzzleFlashSprite);
 let muzzleFlashTimeout = null;
-function showMuzzleFlash() {
-  muzzleFlashLight.intensity = 6;
+function showMuzzleFlash(weaponId) {
+  // en visant, la flamme est réduite pour ne pas boucher la vue
+  const size = (isAiming ? 0.22 : 0.42) * (weaponId === 'shotgun' ? 1.5 : weaponId === 'sniper' ? 1.25 : 1) * (0.85 + Math.random() * 0.4);
+  muzzleFlashSprite.scale.setScalar(size);
+  muzzleFlashSprite.material.rotation = Math.random() * Math.PI * 2;
+  muzzleFlashSprite.material.opacity = isAiming ? 0.7 : 1;
+  muzzleFlashSprite.visible = true;
+  muzzleFlashLight.intensity = 14;
   clearTimeout(muzzleFlashTimeout);
   muzzleFlashTimeout = setTimeout(() => {
     muzzleFlashLight.intensity = 0;
-  }, 40);
+    muzzleFlashSprite.visible = false;
+  }, 55);
 }
 
 // Met à jour le modèle 3D visible (et sa teinte de rareté) d'après le slot
@@ -629,6 +788,9 @@ function refreshEquippedWeaponDisplay() {
   weaponModels[currentWeaponIndex].group.visible = true;
   weaponGroup.visible = true;
   applyRarityTint(equipped.id, equipped.rarity);
+  muzzleFlashLight.position.z = MUZZLE_Z[equipped.id] ?? -0.5;
+  muzzleFlashSprite.position.z = MUZZLE_Z[equipped.id] ?? -0.5;
+  updateAmmoUI();
 }
 
 // Sélectionne un slot d'arme (0 ou 1). Pour un slot vide (pas encore
@@ -639,13 +801,14 @@ function selectSlot(slot, { silent = false } = {}) {
   if (!myWeapons[slot]) return; // rien dans ce slot
 
   const changed = slot !== currentSlot;
+  if (changed) cancelReload();
   currentSlot = slot;
   refreshEquippedWeaponDisplay();
   updateInventoryUI();
   if (changed && !silent && networkStarted) audio.playSwitchWeapon();
 }
 document.addEventListener('keydown', (e) => {
-  if (isShopOpen()) return; // pas de changement d'arme "à l'aveugle" pendant qu'on regarde la boutique
+  if (isOverlayOpen()) return; // pas de changement d'arme "à l'aveugle" pendant qu'on regarde la boutique/la carte
   if (e.code === keybinds.weaponSlot1) selectSlot(0);
   if (e.code === keybinds.weaponSlot2) selectSlot(1);
 });
@@ -660,7 +823,7 @@ const WHEEL_SWITCH_COOLDOWN_MS = 150;
 document.addEventListener(
   'wheel',
   (e) => {
-    if (isShopOpen() || isDead || !networkStarted) return;
+    if (isOverlayOpen() || isDead || !networkStarted) return;
     const now = performance.now();
     if (now - lastWheelSwitchAt < WHEEL_SWITCH_COOLDOWN_MS) return;
     const direction = e.deltaY > 0 ? 1 : -1;
@@ -677,6 +840,7 @@ document.addEventListener(
   { passive: true }
 );
 
+const _weaponTarget = new THREE.Vector3();
 const WEAPON_REST_POSITION = new THREE.Vector3(0.28, -0.25, -0.55);
 const WEAPON_AIM_POSITION = new THREE.Vector3(0, -0.18, -0.35);
 weaponGroup.position.copy(WEAPON_REST_POSITION);
@@ -718,7 +882,7 @@ function currentMaxShield() {
 // système de rareté — voir shop.js. currentSlot vaut 0 ou 1 (armes
 // uniquement) — sélection via les touches 1/2 ; les gilets n'ont plus de
 // slot dédié, voir la touche P plus bas.
-let myWeapons = [{ id: 'pistol', rarity: 'gray' }, null];
+let myWeapons = [{ id: 'pistol', rarity: 'gray', ammo: WEAPON_DEFS.pistol.magSize }, null];
 let myVestCount = 0;
 let currentSlot = 0;
 
@@ -778,6 +942,7 @@ function updateMoneyUI(money) {
 updateMoneyUI(localMoney);
 
 function weaponLabel(weaponId) {
+  if (weaponId === 'frag') return GRENADE_DEFS.frag.name;
   const weapon = WEAPONS.find((w) => w.id === weaponId);
   return weapon ? weapon.name : 'Vide';
 }
@@ -786,7 +951,13 @@ function weaponLabel(weaponId) {
 // (renderShop/openShop) — regroupé ici pour n'avoir qu'un seul endroit à
 // mettre à jour si la boutique a besoin d'une donnée de plus un jour.
 function getShopState() {
-  return { money: localMoney, weapons: myWeapons, vestCount: myVestCount, maxVestSlots: myMaxVestSlots };
+  return {
+    money: localMoney,
+    weapons: myWeapons,
+    vestCount: myVestCount,
+    maxVestSlots: myMaxVestSlots,
+    grenades: myGrenades,
+  };
 }
 
 function updateInventoryUI() {
@@ -843,6 +1014,10 @@ function handleWeaponsUpdate(weapons) {
   // reset au respawn) même si le slot correspondant n'est pas affiché tout
   // de suite — la teinte sera donc déjà bonne si on rechange de slot plus tard.
   myWeapons.forEach((w) => { if (w) applyRarityTint(w.id, w.rarity); });
+  if (isReloading) {
+    const reloaded = myWeapons[reloadSlot];
+    if (!reloaded || `${reloaded.id}:${reloaded.rarity}` !== reloadWeaponKey) cancelReload({ notify: false });
+  }
   // Si le slot actif vient de perdre son arme (ex: reset à la mort), on
   // retombe sur le pistolet plutôt que de rester bloqué sur un slot vide.
   if (!myWeapons[currentSlot]) {
@@ -851,6 +1026,7 @@ function handleWeaponsUpdate(weapons) {
     refreshEquippedWeaponDisplay();
     updateInventoryUI();
   }
+  updateAmmoUI();
   if (isShopOpen()) renderShop(getShopState());
 }
 
@@ -886,8 +1062,25 @@ function showHitMarker() {
   hitMarkerTimeout = setTimeout(() => crosshairEl.classList.remove('hit'), 150);
 }
 
+// Touche confirmée par le serveur : marqueur sur le viseur + chiffre de dégâts
+// flottant au-dessus de la cible (cumulé si on la touche en rafale).
+const _damageNumberPos = new THREE.Vector3();
+function handleHitConfirmed(data) {
+  showHitMarker();
+  const entry = data?.target ? otherPlayers.get(data.target) : null;
+  if (!entry || !(data.damage > 0)) return;
+  _damageNumberPos.set(entry.mesh.position.x, entry.mesh.position.y + 2.05, entry.mesh.position.z);
+  hudFx.showDamageNumber(_damageNumberPos, data.damage, Boolean(data.headshot), data.target);
+}
+
+// Quelqu'un (ou une explosion) nous blesse : arc rouge qui pointe vers la source
+function handleDamageTaken({ x, z, amount }) {
+  hudFx.addDamageSource(x, z, amount);
+}
+
 let respawnInterval = null;
 function handleYouDied() {
+  hudFx.clear();
   isDead = true;
   audio.playDeath();
   localHp = 0;
@@ -909,6 +1102,17 @@ function handleYouDied() {
     closeShop();
     menuEl.style.display = 'flex';
   }
+  if (minimap.isOpen()) {
+    minimap.close();
+    menuEl.style.display = 'flex';
+  }
+  // Fin de toute action en cours
+  cancelReload({ notify: false });
+  isSprinting = false;
+  endSlide();
+  isAiming = false;
+  isMouseDown = false;
+  updateAmmoUI();
 
   let secondsLeft = 3;
   respawnCountdownEl.textContent = `Réapparition dans ${secondsLeft}s…`;
@@ -925,13 +1129,17 @@ function handleYouRespawned({ position }) {
   isDead = false;
   localHp = MAX_HP;
   updateHealthUI(MAX_HP);
-  myWeapons = [{ id: 'pistol', rarity: 'gray' }, null];
+  myWeapons = [{ id: 'pistol', rarity: 'gray', ammo: WEAPON_DEFS.pistol.magSize }, null];
   applyRarityTint('pistol', 'gray');
   selectSlot(0, { silent: true });
   audio.playRespawn();
   deathScreenEl.hidden = true;
   clearInterval(respawnInterval);
   verticalVelocity = 0;
+  stamina = STAMINA_MAX;
+  sprintLocked = false;
+  bloom = 0;
+  updateAmmoUI();
   if (position) {
     camera.position.set(position.x, position.y, position.z);
   }
@@ -1081,13 +1289,23 @@ function onKeyChange(e, isDown) {
       break;
     case keybinds.jump:
       if (isDown && isGrounded && !isDead) {
+        if (slideTimer > 0) {
+          // Saut depuis une glissade : on garde l'élan vers l'avant
+          endSlide();
+          velocity.z = -BASE_SPEED * 1.5;
+        }
         verticalVelocity = JUMP_SPEED;
         isGrounded = false;
         audio.playJump();
       }
       break;
     case keybinds.crouch:
+      // S'accroupir EN COURANT déclenche une glissade
+      if (isDown && !isCrouching && canStartSlide()) startSlide();
       isCrouching = isDown;
+      break;
+    case keybinds.sprint:
+      sprintHeld = isDown;
       break;
   }
 }
@@ -1109,6 +1327,7 @@ document.addEventListener('mousedown', (e) => {
   }
   if (e.button === 0) {
     isMouseDown = true;
+    isSprinting = false; // tirer coupe la course (elle reprend toute seule au relâchement)
     tryShoot(clock.elapsedTime);
   }
 });
@@ -1118,7 +1337,7 @@ document.addEventListener('mouseup', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.code !== keybinds.useVest || isDead || isShopOpen()) return;
+  if (e.code !== keybinds.useVest || isDead || isOverlayOpen()) return;
   if (myVestCount > 0) sendUseVest();
 });
 
@@ -1126,7 +1345,7 @@ document.addEventListener('keydown', (e) => {
 // le slot sélectionné si le stuff est plein, ou dans le slot vide sinon —
 // voir la logique côté serveur ('collect-weapon' dans server.js).
 document.addEventListener('keydown', (e) => {
-  if (e.code !== keybinds.pickupWeapon || isDead || isShopOpen() || !networkStarted) return;
+  if (e.code !== keybinds.pickupWeapon || isDead || isOverlayOpen() || !networkStarted) return;
   const closestId = findClosestGroundWeapon();
   if (closestId) sendCollectWeapon(closestId, currentSlot);
 });
@@ -1146,7 +1365,7 @@ initShop({
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.code !== keybinds.shop || isDead || !networkStarted) return;
+  if (e.code !== keybinds.shop || isDead || !networkStarted || minimap.isOpen()) return;
   if (isShopOpen()) {
     closeShop();
     controls.lock(); // touche B pressée = geste utilisateur direct, le verrouillage du pointeur est autorisé
@@ -1155,6 +1374,612 @@ document.addEventListener('keydown', (e) => {
     openShop(getShopState());
   }
 });
+
+// ---------------------------------------------------------------------------
+// Gameplay étendu : munitions, rechargement, course, glissade, grenades,
+// effets d'explosion/fumée, carte et pings d'équipe.
+// Le serveur reste seul juge des munitions, des dégâts et des explosions
+// (voir server.js) : ce qui suit est surtout de l'affichage et de la
+// prédiction locale, recalée sur ce que dit le serveur.
+// ---------------------------------------------------------------------------
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+
+// Boutique OU carte ouverte : le joueur ne bouge, ne tire et ne change pas d'arme.
+function isOverlayOpen() {
+  return isShopOpen() || minimap.isOpen();
+}
+
+// --- Munitions & rechargement ------------------------------------------------
+const ammoHudEl = document.getElementById('ammo-hud');
+const ammoCountEl = document.getElementById('ammo-count');
+const ammoMagEl = document.getElementById('ammo-mag');
+const ammoStateEl = document.getElementById('ammo-state');
+const reloadFillEl = document.getElementById('reload-fill');
+
+let isReloading = false;
+let reloadStartedAt = 0;
+let reloadDurationMs = 0;
+let reloadSlot = -1;
+let reloadWeaponKey = '';
+let lastLocalShotAt = -Infinity; // performance.now() du dernier tir local
+let bloom = 0; // dispersion accumulée en rafale (voir weapons.js)
+
+function updateAmmoUI() {
+  if (!ammoHudEl) return;
+  const weapon = myWeapons[currentSlot];
+  if (!weapon) {
+    ammoHudEl.style.display = 'none';
+    return;
+  }
+  const def = WEAPON_DEFS[weapon.id];
+  const ammo = weapon.ammo ?? def.magSize;
+  ammoHudEl.style.display = 'flex';
+  ammoCountEl.textContent = String(ammo);
+  ammoMagEl.textContent = `/ ${def.magSize}`;
+  ammoHudEl.classList.toggle('empty', ammo <= 0 && !isReloading);
+  ammoHudEl.classList.toggle('low', ammo > 0 && ammo <= Math.ceil(def.magSize * 0.25));
+  ammoHudEl.classList.toggle('reloading', isReloading);
+  ammoStateEl.textContent = isReloading
+    ? 'Rechargement'
+    : ammo <= 0
+      ? `${keyLabel(keybinds.reload)} recharger`
+      : '';
+}
+
+function startReload() {
+  if (isDead || isReloading || isOverlayOpen() || !networkStarted) return;
+  const weapon = myWeapons[currentSlot];
+  if (!weapon) return;
+  const def = WEAPON_DEFS[weapon.id];
+  if ((weapon.ammo ?? def.magSize) >= def.magSize) return;
+
+  isReloading = true;
+  reloadSlot = currentSlot;
+  reloadWeaponKey = `${weapon.id}:${weapon.rarity}`;
+  reloadStartedAt = performance.now();
+  reloadDurationMs = def.reloadTime * 1000;
+  audio.playReload(def.reloadTime);
+  sendReload(currentSlot);
+  updateAmmoUI();
+}
+
+function cancelReload({ notify = true } = {}) {
+  if (!isReloading) return;
+  isReloading = false;
+  if (notify) sendCancelReload();
+  updateAmmoUI();
+}
+
+function finishReloadLocally() {
+  const weapon = myWeapons[reloadSlot];
+  isReloading = false;
+  if (weapon) weapon.ammo = WEAPON_DEFS[weapon.id].magSize;
+  updateAmmoUI();
+}
+
+// Le serveur envoie le nombre de balles restantes (après un tir, un tir refusé
+// à vide, ou la fin d'un rechargement). En pleine rafale on ignore ses valeurs
+// "trop hautes" (elles arrivent avec la latence, en retard sur notre compte local).
+function handleAmmoUpdate({ slot, ammo, reloaded } = {}) {
+  const weapon = myWeapons[slot];
+  if (!weapon || !Number.isFinite(ammo)) return;
+  if (reloaded) {
+    weapon.ammo = ammo;
+    if (isReloading && reloadSlot === slot) isReloading = false;
+  } else if (ammo < (weapon.ammo ?? Infinity) || performance.now() - lastLocalShotAt > 350) {
+    weapon.ammo = ammo;
+  }
+  updateAmmoUI();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.code !== keybinds.reload || e.repeat) return;
+  startReload();
+});
+
+// --- Dispersion, recul de caméra ---------------------------------------------
+const _shotRight = new THREE.Vector3();
+const _shotUp = new THREE.Vector3();
+const _recoilEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+
+function computeCurrentSpread(def) {
+  const moving = slideTimer > 0 || Math.hypot(velocity.x, velocity.z) > 0.6;
+  return currentSpread(def, {
+    aiming: isAiming,
+    moving,
+    airborne: !isGrounded,
+    crouching: isCrouching,
+    bloom,
+  });
+}
+
+// Renvoie `base` légèrement dévié, uniformément dans un disque de rayon `spread`
+function perturbDirection(base, spread, out) {
+  if (spread <= 0) return out.copy(base);
+  _shotRight.crossVectors(base, WORLD_UP);
+  if (_shotRight.lengthSq() < 1e-6) _shotRight.set(1, 0, 0);
+  _shotRight.normalize();
+  _shotUp.crossVectors(_shotRight, base).normalize();
+  const r = spread * Math.sqrt(Math.random());
+  const a = Math.random() * Math.PI * 2;
+  return out
+    .copy(base)
+    .addScaledVector(_shotRight, Math.cos(a) * r)
+    .addScaledVector(_shotUp, Math.sin(a) * r)
+    .normalize();
+}
+
+// Fait pivoter la vue (tangage/lacet) — sert au recul des armes et aux secousses.
+function nudgeCamera(dPitch, dYaw) {
+  _recoilEuler.setFromQuaternion(camera.quaternion);
+  _recoilEuler.x = THREE.MathUtils.clamp(_recoilEuler.x + dPitch, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
+  _recoilEuler.y += dYaw;
+  camera.quaternion.setFromEuler(_recoilEuler);
+}
+
+function applyCameraRecoil(def) {
+  const factor = isAiming ? 0.6 : 1;
+  nudgeCamera(def.recoil * factor * (0.8 + Math.random() * 0.4), (Math.random() - 0.5) * def.recoil * 0.5);
+}
+
+// Secousse d'écran (explosions proches) : une petite série d'impulsions qui se
+// compensent, pour que la vue revienne exactement où elle était.
+function shakeCamera(strength) {
+  const amp = 0.014 * THREE.MathUtils.clamp(strength, 0, 1);
+  if (amp <= 0.0005) return;
+  [1, -2, 2, -1].forEach((k, i) => {
+    setTimeout(() => nudgeCamera(amp * k, -amp * k * 0.6), i * 45);
+  });
+}
+
+// Zoom effectif en visée : la lunette du sniper zoome bien plus que les autres armes.
+function getAimFov() {
+  const weapon = myWeapons[currentSlot];
+  const zoom = weapon ? WEAPON_DEFS[weapon.id].zoomRatio : null;
+  return zoom ? BASE_FOV * zoom : AIM_FOV;
+}
+
+// --- Course, endurance, glissade ---------------------------------------------
+const staminaBarEl = document.getElementById('stamina-bar');
+const staminaFillEl = document.getElementById('stamina-fill');
+let sprintHeld = false;
+let isSprinting = false;
+let sprintLocked = false; // vrai après épuisement, jusqu'à récupérer STAMINA_MIN_TO_RESUME
+let stamina = STAMINA_MAX;
+let staminaRegenTimer = 0;
+let sprintBlend = 0; // 0..1 : arme baissée en courant
+let reloadBlend = 0; // 0..1 : animation de rechargement
+let throwKick = 0; // 0..1 : geste de lancer
+
+let slideTimer = 0;
+let slideCooldown = 0;
+const slideDir = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
+
+function updateSprintState(delta) {
+  const canRun =
+    sprintHeld && !isDead && !isOverlayOpen() && !isAiming && !isCrouching && !isMouseDown &&
+    slideTimer <= 0 && move.forward && !move.backward;
+
+  isSprinting = canRun && !sprintLocked && stamina > 0;
+  if (isSprinting) {
+    stamina = Math.max(0, stamina - STAMINA_DRAIN_PER_SEC * delta);
+    staminaRegenTimer = STAMINA_REGEN_DELAY;
+    if (stamina <= 0) {
+      sprintLocked = true;
+      isSprinting = false;
+      audio.playExhausted();
+    }
+  } else {
+    staminaRegenTimer = Math.max(0, staminaRegenTimer - delta);
+    if (staminaRegenTimer <= 0 && stamina < STAMINA_MAX) {
+      stamina = Math.min(STAMINA_MAX, stamina + STAMINA_REGEN_PER_SEC * delta);
+    }
+    if (sprintLocked && stamina >= STAMINA_MIN_TO_RESUME) sprintLocked = false;
+  }
+
+  if (staminaBarEl) {
+    staminaBarEl.classList.toggle('show', stamina < STAMINA_MAX || isSprinting);
+    staminaBarEl.classList.toggle('exhausted', sprintLocked);
+    staminaFillEl.style.width = `${(stamina / STAMINA_MAX) * 100}%`;
+  }
+}
+
+function canStartSlide() {
+  return isSprinting && isGrounded && slideCooldown <= 0 && slideTimer <= 0 && !isDead && !isOverlayOpen();
+}
+
+function startSlide() {
+  // Direction = là où on court (avant + éventuel côté), figée pour toute la glissade
+  camera.getWorldDirection(_fwd);
+  _fwd.y = 0;
+  _fwd.normalize();
+  slideDir.set(0, 0, 0);
+  slideDir.addScaledVector(_fwd, Number(move.forward) - Number(move.backward));
+  slideDir.x += -_fwd.z * (Number(move.right) - Number(move.left));
+  slideDir.z += _fwd.x * (Number(move.right) - Number(move.left));
+  if (slideDir.lengthSq() < 1e-6) slideDir.copy(_fwd);
+  slideDir.normalize();
+  slideTimer = SLIDE_DURATION;
+  isSprinting = false;
+  audio.playSlide();
+}
+
+function endSlide() {
+  if (slideTimer > 0) slideCooldown = SLIDE_COOLDOWN;
+  slideTimer = 0;
+}
+
+window.addEventListener('blur', () => {
+  sprintHeld = false;
+});
+
+// --- Grenades & fumigènes ------------------------------------------------------
+const grenadeHudChips = {
+  frag: document.querySelector('.gren-chip[data-kind="frag"]'),
+  smoke: document.querySelector('.gren-chip[data-kind="smoke"]'),
+};
+let myGrenades = { frag: 0, smoke: 0 };
+let lastThrowAt = -Infinity;
+
+function updateGrenadeUI() {
+  Object.entries(grenadeHudChips).forEach(([kind, chip]) => {
+    if (!chip) return;
+    chip.classList.toggle('empty', !(myGrenades[kind] > 0));
+    chip.querySelector('.gren-count').textContent = String(myGrenades[kind] || 0);
+    const keyEl = chip.querySelector('.inv-key');
+    if (keyEl) keyEl.textContent = keyLabel(kind === 'frag' ? keybinds.grenadeFrag : keybinds.grenadeSmoke);
+  });
+}
+updateGrenadeUI();
+
+function handleGrenadesUpdate(data = {}) {
+  myGrenades = { frag: data.frag || 0, smoke: data.smoke || 0 };
+  updateGrenadeUI();
+  if (isShopOpen()) renderShop(getShopState());
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.repeat || isDead || isOverlayOpen() || !networkStarted) return;
+  const kind = e.code === keybinds.grenadeFrag ? 'frag' : e.code === keybinds.grenadeSmoke ? 'smoke' : null;
+  if (!kind || !(myGrenades[kind] > 0)) return;
+  const now = performance.now();
+  if (now - lastThrowAt < 700) return;
+  lastThrowAt = now;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  sendThrowGrenade(kind, { x: dir.x, y: dir.y, z: dir.z });
+});
+
+// Boîtes de collision au format du serveur ({minX, maxX, ...}), pour que le vol
+// des grenades soit calculé exactement comme là-bas (voir stepGrenade).
+let grenadeBoxCache = { boxes: [], count: -1 };
+function getGrenadeBoxes() {
+  if (grenadeBoxCache.count !== collisionBoxes.length) {
+    grenadeBoxCache = {
+      count: collisionBoxes.length,
+      boxes: collisionBoxes.map((b) => ({
+        minX: b.min.x, maxX: b.max.x, minY: b.min.y, maxY: b.max.y, minZ: b.min.z, maxZ: b.max.z,
+      })),
+    };
+  }
+  return grenadeBoxCache.boxes;
+}
+
+const grenadeGeometry = new THREE.SphereGeometry(0.1, 10, 8);
+const fragMaterial = new THREE.MeshStandardMaterial({ color: 0x4f6b3a, roughness: 0.6, metalness: 0.3 });
+const smokeCanMaterial = new THREE.MeshStandardMaterial({ color: 0xaab4bd, roughness: 0.5, metalness: 0.4 });
+const smokeCanGeometry = new THREE.CylinderGeometry(0.06, 0.06, 0.2, 10);
+const activeGrenades = new Map(); // id -> { mesh, kind, pos, vel, acc, spin }
+
+function handleGrenadeSpawned({ id, kind, owner, position, velocity }) {
+  if (!position || !velocity || activeGrenades.has(id)) return;
+  const mesh = new THREE.Mesh(
+    kind === 'smoke' ? smokeCanGeometry : grenadeGeometry,
+    kind === 'smoke' ? smokeCanMaterial : fragMaterial
+  );
+  mesh.position.set(position.x, position.y, position.z);
+  scene.add(mesh);
+  activeGrenades.set(id, {
+    mesh,
+    kind,
+    pos: { x: position.x, y: position.y, z: position.z },
+    vel: { x: velocity.x, y: velocity.y, z: velocity.z },
+    acc: 0,
+    spin: new THREE.Vector3((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10),
+  });
+  if (owner === getMyId()) {
+    throwKick = 1;
+    audio.playGrenadeThrow();
+  }
+}
+
+function updateGrenades(delta) {
+  if (activeGrenades.size === 0) return;
+  const boxes = getGrenadeBoxes();
+  activeGrenades.forEach((g) => {
+    g.acc += delta;
+    let steps = 0;
+    while (g.acc >= GRENADE_STEP && steps < 6) {
+      stepGrenade(g, boxes, GRENADE_STEP);
+      g.acc -= GRENADE_STEP;
+      steps += 1;
+    }
+    if (steps === 6) g.acc = 0;
+    g.mesh.position.set(g.pos.x, g.pos.y, g.pos.z);
+    g.mesh.rotation.x += g.spin.x * delta;
+    g.mesh.rotation.y += g.spin.y * delta;
+    g.mesh.rotation.z += g.spin.z * delta;
+  });
+}
+
+// --- Effets visuels (explosion, fumée) ------------------------------------------
+const visualEffects = []; // { update(delta) => boolean (toujours actif ?) }
+const fireGeometry = new THREE.SphereGeometry(1, 16, 12);
+const sparkGeometry = new THREE.BoxGeometry(0.07, 0.07, 0.07);
+// Une seule lumière réutilisée (ajouter/retirer des lumières en pleine partie
+// force three.js à recompiler les matériaux et fait saccader l'image).
+const blastLight = new THREE.PointLight(0xffa040, 0, 26, 2);
+scene.add(blastLight);
+let blastLightLevel = 0;
+const blastFlashEl = document.getElementById('blast-flash');
+let blastFlashLevel = 0;
+
+function spawnExplosion(p) {
+  audio.playExplosion(p);
+
+  const fireMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffa13a, transparent: true, opacity: 0.95, depthWrite: false,
+  });
+  const fireball = new THREE.Mesh(fireGeometry, fireMaterial);
+  fireball.position.set(p.x, p.y + 0.3, p.z);
+  fireball.scale.setScalar(0.6);
+  scene.add(fireball);
+
+  blastLight.position.copy(fireball.position);
+  blastLightLevel = 1;
+
+  const sparkMaterial = new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true });
+  const sparks = [];
+  for (let i = 0; i < 24; i++) {
+    const mesh = new THREE.Mesh(sparkGeometry, sparkMaterial);
+    mesh.position.copy(fireball.position);
+    const angle = Math.random() * Math.PI * 2;
+    const lift = 0.3 + Math.random() * 0.9;
+    const speed = 5 + Math.random() * 9;
+    scene.add(mesh);
+    sparks.push({ mesh, vx: Math.cos(angle) * speed, vy: lift * speed, vz: Math.sin(angle) * speed });
+  }
+
+  const life = 0.75;
+  let t = 0;
+  visualEffects.push({
+    update(delta) {
+      t += delta;
+      const k = Math.min(1, t / life);
+      fireball.scale.setScalar(0.6 + k * 5);
+      fireMaterial.opacity = 0.95 * (1 - k) ** 1.6;
+      sparkMaterial.opacity = 1 - k;
+      sparks.forEach((sp) => {
+        sp.vy -= 14 * delta;
+        sp.mesh.position.x += sp.vx * delta;
+        sp.mesh.position.y = Math.max(0.05, sp.mesh.position.y + sp.vy * delta);
+        sp.mesh.position.z += sp.vz * delta;
+      });
+      if (k < 1) return true;
+      scene.remove(fireball);
+      fireMaterial.dispose();
+      sparks.forEach((sp) => scene.remove(sp.mesh));
+      sparkMaterial.dispose();
+      return false;
+    },
+  });
+
+  // Secousse + flash blanc selon la distance
+  const dist = camera.position.distanceTo(fireball.position);
+  if (dist < 24) shakeCamera(1 - dist / 24);
+  if (dist < 11) blastFlashLevel = Math.max(blastFlashLevel, (1 - dist / 11) * 0.85);
+}
+
+let smokeTexture = null;
+function getSmokeTexture() {
+  if (smokeTexture) return smokeTexture;
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const c = canvas.getContext('2d');
+  const gradient = c.createRadialGradient(size / 2, size / 2, 4, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, 'rgba(255,255,255,1)');
+  gradient.addColorStop(0.55, 'rgba(255,255,255,0.7)');
+  gradient.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = gradient;
+  c.fillRect(0, 0, size, size);
+  smokeTexture = new THREE.CanvasTexture(canvas);
+  return smokeTexture;
+}
+
+function spawnSmoke(p) {
+  audio.playSmokePop(p);
+  const def = GRENADE_DEFS.smoke;
+  const group = new THREE.Group();
+  group.position.set(p.x, p.y, p.z);
+  scene.add(group);
+
+  const puffs = [];
+  for (let i = 0; i < 18; i++) {
+    const material = new THREE.SpriteMaterial({
+      map: getSmokeTexture(),
+      color: new THREE.Color().setHSL(0.58, 0.05, 0.62 + Math.random() * 0.15),
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    const sprite = new THREE.Sprite(material);
+    const r = def.radius * 0.5 * Math.cbrt(Math.random());
+    const a = Math.random() * Math.PI * 2;
+    sprite.position.set(Math.cos(a) * r, 0.7 + Math.random() * def.radius * 0.55, Math.sin(a) * r);
+    group.add(sprite);
+    puffs.push({
+      sprite,
+      material,
+      target: 4.5 + Math.random() * 3,
+      delay: Math.random() * 0.5,
+      drift: new THREE.Vector3((Math.random() - 0.5) * 0.12, 0.03 + Math.random() * 0.05, (Math.random() - 0.5) * 0.12),
+      spin: (Math.random() - 0.5) * 0.25,
+    });
+  }
+
+  const life = def.duration;
+  let t = 0;
+  visualEffects.push({
+    update(delta) {
+      t += delta;
+      const fadeOut = THREE.MathUtils.clamp((life - t) / 3, 0, 1);
+      puffs.forEach((pf) => {
+        const grow = THREE.MathUtils.clamp((t - pf.delay) / 1.4, 0, 1);
+        const eased = 1 - (1 - grow) ** 3;
+        const size = pf.target * (0.3 + 0.7 * eased);
+        pf.sprite.scale.set(size, size, 1);
+        pf.sprite.position.addScaledVector(pf.drift, delta);
+        pf.material.rotation += pf.spin * delta;
+        pf.material.opacity = 0.92 * grow * fadeOut;
+      });
+      if (t < life) return true;
+      scene.remove(group);
+      puffs.forEach((pf) => pf.material.dispose());
+      return false;
+    },
+  });
+}
+
+function handleGrenadeExploded({ id, kind, position }) {
+  const g = activeGrenades.get(id);
+  if (g) {
+    scene.remove(g.mesh);
+    activeGrenades.delete(id);
+  }
+  if (!position) return;
+  if (kind === 'smoke') spawnSmoke(position);
+  else spawnExplosion(position);
+}
+
+function updateVisualEffects(delta) {
+  for (let i = visualEffects.length - 1; i >= 0; i--) {
+    if (!visualEffects[i].update(delta)) visualEffects.splice(i, 1);
+  }
+  if (blastLightLevel > 0) {
+    blastLightLevel = Math.max(0, blastLightLevel - delta * 3);
+    blastLight.intensity = 45 * blastLightLevel * blastLightLevel;
+  }
+  if (blastFlashLevel > 0) {
+    blastFlashLevel = Math.max(0, blastFlashLevel - delta * 1.4);
+    if (blastFlashEl) blastFlashEl.style.opacity = String(blastFlashLevel);
+  }
+}
+
+// --- Carte & pings d'équipe -------------------------------------------------------
+const pingRaycaster = new THREE.Raycaster();
+const pingRayOrigin = new THREE.Vector3();
+const pingRayDown = new THREE.Vector3(0, -1, 0);
+function sampleGroundY(x, z) {
+  pingRayOrigin.set(x, 30, z);
+  pingRaycaster.set(pingRayOrigin, pingRayDown);
+  pingRaycaster.far = 60;
+  const hits = pingRaycaster.intersectObjects(groundObjects, true);
+  return hits.length ? hits[0].point.y : 0;
+}
+
+// Même définition que isAlly côté serveur (server.js) : même équipe et même
+// mode ; en mode Solo (équipes auto-équilibrées) il faut en plus le même groupe.
+function isAllyEntry(entry) {
+  const myMode = getActiveMode();
+  if (entry.mode !== myMode || entry.team !== localTeam) return false;
+  return myMode === 'team' || (Boolean(entry.groupId) && entry.groupId === getActiveGroupId());
+}
+
+let myBodyColor = getAppearance().bodyColor;
+const _selfEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const minimap = createMinimap({
+  screenEl: document.getElementById('map-screen'),
+  canvasEl: document.getElementById('map-canvas'),
+  markerLayerEl: document.getElementById('ping-layer'),
+  getBoxes: () => collisionBoxes,
+  getSelf: () => {
+    _selfEuler.setFromQuaternion(camera.quaternion);
+    return { x: camera.position.x, z: camera.position.z, yaw: _selfEuler.y, color: myBodyColor };
+  },
+  getAllies: () => {
+    const allies = [];
+    otherPlayers.forEach((entry, id) => {
+      if (!entry.mesh.visible || !isAllyEntry(entry)) return;
+      allies.push({
+        id,
+        x: entry.mesh.position.x,
+        z: entry.mesh.position.z,
+        color: entry.appearance?.bodyColor,
+        pseudo: entry.pseudo,
+      });
+    });
+    return allies;
+  },
+  getGroundY: sampleGroundY,
+  onPlacePing: (x, z) => sendPlacePing(x, z),
+  onRemovePing: () => sendRemovePing(),
+  getMyId,
+});
+
+document.getElementById('map-hint').textContent =
+  `Clic gauche : ping d'équipe · Clic droit : retirer mon ping · ${keyLabel(keybinds.map)} : fermer`;
+
+document.addEventListener('keydown', (e) => {
+  if (e.repeat || !networkStarted) return;
+  // Pointeur déjà libéré : Échap n'est pas intercepté par le navigateur, on ferme
+  // la carte nous-mêmes et on réaffiche le menu pour pouvoir reprendre la partie.
+  if (e.code === 'Escape' && minimap.isOpen()) {
+    minimap.close();
+    menuEl.style.display = 'flex';
+    return;
+  }
+  if (e.code !== keybinds.map || isDead || isShopOpen()) return;
+  if (minimap.isOpen()) {
+    minimap.close();
+    controls.lock(); // touche pressée = geste utilisateur direct, le verrouillage est autorisé
+  } else {
+    minimap.open();
+    controls.unlock(); // affiche le curseur pour cliquer sur la carte
+  }
+});
+
+function handlePingPlaced(data) {
+  minimap.addPing(data);
+  audio.playPing();
+}
+
+// --- Réticule : le cercle montre la dispersion réelle ----------------------------
+// Viseur : point central + 4 traits fins. À la hanche l'écart point/traits
+// suit la dispersion réelle de l'arme (il s'ouvre quand on court, saute ou tire
+// en rafale) ; en visant, les traits se resserrent jusqu'à former un petit plus.
+const scopeOverlayEl = document.getElementById('scope-overlay'); // lunette du sniper
+let crosshairAim = 0; // 0 = hanche, 1 = visée (lissé pour une transition douce)
+function updateCrosshair(delta = 0.016) {
+  const weapon = myWeapons[currentSlot];
+  const def = weapon ? WEAPON_DEFS[weapon.id] : null;
+  const scoped = Boolean(def?.zoomRatio) && isAiming && !isDead && camera.fov < BASE_FOV * 0.6;
+  if (scopeOverlayEl) scopeOverlayEl.classList.toggle('show', scoped);
+  crosshairEl.style.display = scoped || isDead ? 'none' : '';
+  if (scoped || isDead) return;
+
+  crosshairAim += ((isAiming ? 1 : 0) - crosshairAim) * Math.min(1, 18 * delta);
+  const focalPx = (window.innerHeight / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const spreadPx = def ? computeCurrentSpread(def) * focalPx : 6;
+  const hipGap = THREE.MathUtils.clamp(spreadPx * 0.9, 6, 46);
+  // En visée l'écart tombe à 1 px = le rayon du point (2 px) : les traits
+  // touchent à peine le point, sans le traverser.
+  const DOT_RADIUS_PX = 1;
+  const gap = DOT_RADIUS_PX + (hipGap - DOT_RADIUS_PX) * (1 - crosshairAim);
+  crosshairEl.style.setProperty('--gap', `${gap.toFixed(2)}px`);
+}
 
 // ---------------------------------------------------------------------------
 // Multijoueur temps réel — voir le projet séparé mini-warzone-server/
@@ -1226,7 +2051,7 @@ function createPlayerMesh(team, steps = 0, appearance = DEFAULT_APPEARANCE, mode
   return { group, bodyMaterial: body.material };
 }
 
-function addOtherPlayer({ id, position, rotationY, team, mode = 'solo', shieldSteps, appearance }) {
+function addOtherPlayer({ id, position, rotationY, team, mode = 'solo', shieldSteps, appearance, pseudo, groupId }) {
   if (otherPlayers.has(id)) return;
   const safeAppearance = sanitizeAppearance(appearance);
   const bodyColor = mode === 'team'
@@ -1241,6 +2066,9 @@ function addOtherPlayer({ id, position, rotationY, team, mode = 'solo', shieldSt
   otherPlayers.set(id, {
     mesh,
     bodyMaterial,
+    pseudo: pseudo || '',
+    groupId: groupId || null,
+    appearance: safeAppearance,
     team,
     mode,
     bodyColor,
@@ -1302,62 +2130,154 @@ function snapOtherPlayer(id, position) {
 // Traceur en petit cylindre fin plutôt qu'une THREE.Line (les lignes WebGL
 // restent à 1px quelle que soit leur "épaisseur" demandée) — géométrie et
 // matériau réutilisés pour chaque tir, seule une nouvelle Mesh est créée.
-const tracerGeometry = new THREE.CylinderGeometry(0.012, 0.012, 1, 6, 1, true);
-tracerGeometry.translate(0, 0.5, 0);
-tracerGeometry.rotateX(Math.PI / 2); // aligné le long de +Z local
-const tracerMaterial = new THREE.MeshBasicMaterial({
-  color: 0xfff6b0,
-  transparent: true,
-  opacity: 0.9,
-});
-
-function showShotTracer(origin, direction, length = 40) {
-  const dir = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
-  const mesh = new THREE.Mesh(tracerGeometry, tracerMaterial);
-  mesh.scale.set(1, 1, length);
-  mesh.position.set(origin.x, origin.y, origin.z);
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
-  scene.add(mesh);
-  setTimeout(() => scene.remove(mesh), 80);
-}
-
+// ---------------------------------------------------------------------------
+// Trajectoire d'un tir côté client (purement visuelle : le serveur reste seul
+// juge de ce qui touche). On cherche ce que la balle rencontre en premier :
+// un mur/le sol (boîtes de collision, les mêmes que celles du serveur) ou un
+// joueur (approximé par 3 sphères : jambes, torse, tête).
+// ---------------------------------------------------------------------------
 const shotRaycaster = new THREE.Raycaster();
-const tmpVec3 = new THREE.Vector3();
-function nearestObstacleDistance(origin, direction) {
-  if (collisionMeshes.length === 0) return Infinity;
-
-  shotRaycaster.set(origin, direction);
-  shotRaycaster.near = 0;
-  shotRaycaster.far = 60;
-
-  const hits = shotRaycaster.intersectObjects(
-    collisionMeshes,
-    true
-  );
-
-  return hits.length > 0 ? hits[0].distance : Infinity;
+const BODY_SPHERES = [[0.45, 0.38], [1.1, 0.4], [1.65, 0.27]]; // [hauteur depuis les pieds, rayon]
+const _oc = new THREE.Vector3();
+function traceShot(origin, dir, maxDist = 60, ignoreId = null) {
+  const result = { distance: maxDist, kind: null, point: new THREE.Vector3(), normal: new THREE.Vector3() };
+  if (collisionMeshes.length > 0) {
+    shotRaycaster.set(origin, dir);
+    shotRaycaster.near = 0;
+    shotRaycaster.far = maxDist;
+    const hits = shotRaycaster.intersectObjects(collisionMeshes, true);
+    if (hits.length > 0) {
+      const hit = hits[0];
+      result.distance = hit.distance;
+      result.kind = 'surface';
+      result.point.copy(hit.point);
+      if (hit.face) result.normal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+      else result.normal.copy(dir).negate();
+    }
+  }
+  otherPlayers.forEach(({ mesh }, id) => {
+    if (id === ignoreId || !mesh.visible) return;
+    BODY_SPHERES.forEach(([height, radius]) => {
+      _oc.set(mesh.position.x - origin.x, mesh.position.y + height - origin.y, mesh.position.z - origin.z);
+      const along = _oc.dot(dir);
+      if (along <= 0) return;
+      const miss2 = _oc.lengthSq() - along * along;
+      if (miss2 > radius * radius) return;
+      const t = along - Math.sqrt(radius * radius - miss2);
+      if (t >= 0 && t < result.distance) {
+        result.distance = t;
+        result.kind = 'body';
+        result.point.copy(origin).addScaledVector(dir, t);
+        result.normal.copy(dir).negate();
+      }
+    });
+  });
+  return result;
 }
+
+// Bouche du canon en main (coordonnées monde) : d'où partent les traceurs
+const _muzzleLocal = new THREE.Vector3();
+function getMuzzleWorldPosition(out, weaponId) {
+  weaponGroup.updateWorldMatrix(true, false);
+  return weaponGroup.localToWorld(out.set(0, 0.02, MUZZLE_Z[weaponId] ?? -0.5));
+}
+
+// Douilles éjectées : taille, couleur et délai (pompe/culasse manœuvrés après le tir)
+const SHELL_SPECS = {
+  pistol: { size: 0.028, thickness: 0.0085, color: 0xd4a64a, delay: 0 },
+  smg: { size: 0.026, thickness: 0.008, color: 0xd4a64a, delay: 0 },
+  rifle: { size: 0.045, thickness: 0.011, color: 0xd4a64a, delay: 0 },
+  shotgun: { size: 0.06, thickness: 0.0125, color: 0xc8372d, delay: 380 },
+  sniper: { size: 0.06, thickness: 0.012, color: 0xd4a64a, delay: 650 },
+};
+const _shellPos = new THREE.Vector3();
+const _shellVel = new THREE.Vector3();
+const _camRight = new THREE.Vector3();
+const _camUp = new THREE.Vector3();
+const _camFwd = new THREE.Vector3();
+function ejectShellFor(weaponId) {
+  const spec = SHELL_SPECS[weaponId];
+  if (!spec) return;
+  const eject = () => {
+    if (isDead) return;
+    weaponGroup.updateWorldMatrix(true, false);
+    weaponGroup.localToWorld(_shellPos.set(0.045, 0.035, -0.12));
+    camera.updateMatrixWorld();
+    _camRight.setFromMatrixColumn(camera.matrixWorld, 0);
+    _camUp.setFromMatrixColumn(camera.matrixWorld, 1);
+    camera.getWorldDirection(_camFwd);
+    _shellVel
+      .copy(_camRight).multiplyScalar(1.5 + Math.random() * 1.3)
+      .addScaledVector(_camUp, 1.1 + Math.random() * 1.1)
+      .addScaledVector(_camFwd, -0.2 + Math.random() * 0.5);
+    fx.ejectShell({ position: _shellPos, velocity: _shellVel, size: spec.size, thickness: spec.thickness, color: spec.color });
+  };
+  if (spec.delay > 0) setTimeout(eject, spec.delay);
+  else eject();
+}
+
 let lastShotAt = -Infinity;
 
+let lastDryFireClock = -Infinity;
+const _shotEnd = new THREE.Vector3();
 function tryShoot(now) {
-  if (isDead || isShopOpen()) return;
+  if (isDead || isOverlayOpen()) return;
+  const equipped = myWeapons[currentSlot];
+  if (!equipped || isReloading) return;
   const weapon = WEAPONS[currentWeaponIndex];
+  const def = WEAPON_DEFS[equipped.id];
   if (now - lastShotAt < weapon.cooldown) return;
+
+  // Chargeur vide : clic à vide, puis rechargement automatique
+  if ((equipped.ammo ?? def.magSize) <= 0) {
+    if (now - lastDryFireClock > 0.4) {
+      lastDryFireClock = now;
+      audio.playDryFire();
+    }
+    startReload();
+    return;
+  }
+
   lastShotAt = now;
+  equipped.ammo = (equipped.ammo ?? def.magSize) - 1;
+  lastLocalShotAt = performance.now();
 
   const origin = camera.position.clone();
-  const dir = new THREE.Vector3();
-  camera.getWorldDirection(dir);
-  const maxLength = Math.min(nearestObstacleDistance(origin, dir), 60);
-  showShotTracer(origin, dir, maxLength);
-  showMuzzleFlash();
+  const base = new THREE.Vector3();
+  camera.getWorldDirection(base);
+
+  // Un plomb par `pellets` (8 pour le fusil à pompe), chacun dévié au hasard
+  // dans le disque de dispersion de l'état actuel (mouvement, saut, visée,
+  // rafale). Le serveur plafonne cette dispersion — voir 'shoot' dans server.js.
+  const spread = computeCurrentSpread(def);
+  const pelletDirs = [];
+  getMuzzleWorldPosition(_muzzleLocal, equipped.id);
+  for (let i = 0; i < def.pellets; i++) {
+    const dir = perturbDirection(base, spread, new THREE.Vector3());
+    pelletDirs.push({ x: dir.x, y: dir.y, z: dir.z });
+    const hit = traceShot(origin, dir, 60, null);
+    _shotEnd.copy(origin).addScaledVector(dir, hit.distance);
+    fx.tracer(_muzzleLocal, _shotEnd); // traceur fin, depuis la bouche du canon
+    if (hit.kind) fx.impact({ point: hit.point, normal: hit.normal, kind: hit.kind === 'body' ? 'body' : 'surface', light: def.pellets > 1 });
+  }
+  showMuzzleFlash(equipped.id);
+  ejectShellFor(equipped.id);
   audio.playShot(weapon.id);
   // On envoie le SLOT actif (0/1), jamais l'id d'arme ni les dégâts : le
   // serveur retrouve lui-même l'arme + la rareté réellement équipées dans
   // ce slot (voir server.js) — impossible de tricher en prétendant avoir
   // une meilleure arme/rareté que celle réellement achetée.
-  sendShoot({ x: origin.x, y: origin.y, z: origin.z }, { x: dir.x, y: dir.y, z: dir.z }, currentSlot);
+  sendShoot(
+    { x: origin.x, y: origin.y, z: origin.z },
+    { x: base.x, y: base.y, z: base.z },
+    currentSlot,
+    pelletDirs
+  );
   recoilKick = 1; // déclenche l'animation de recul de l'arme, gérée dans animate()
+  bloom = Math.min(BLOOM_MAX, bloom + BLOOM_PER_SHOT);
+  applyCameraRecoil(def);
+  updateAmmoUI();
+  if (equipped.ammo <= 0) setTimeout(startReload, 220);
 }
 
 let networkStarted = false;
@@ -1382,6 +2302,11 @@ function startNetwork() {
   networkStarted = true;
   keybinds = getKeybinds(); // au cas où elles ont été changées depuis le lobby avant de rejouer
   applySettings(); // idem pour sensibilité, champ de vision, volume et bloom
+  myBodyColor = getAppearance().bodyColor; // couleur de TON ping d'équipe
+  updateGrenadeUI(); // touches de lancer peut-être changées dans Paramètres
+  document.getElementById('map-hint').textContent =
+    `Clic gauche : ping d'équipe · Clic droit : retirer mon ping · ${keyLabel(keybinds.map)} : fermer`;
+  updateAmmoUI();
 
   const pseudo = auth.currentUser?.displayName || 'Joueur';
   const groupId = getActiveGroupId();
@@ -1390,9 +2315,28 @@ function startNetwork() {
     onTeamAssigned: handleTeamAssigned,
     onPlayerJoined: addOtherPlayer,
     onPlayerMoved: updateOtherPlayer,
-    onPlayerShoot: ({ origin, direction, maxLength, weaponId }) => {
-      showShotTracer(origin, direction, Number.isFinite(maxLength) ? maxLength : 40);
-      if (origin) audio.playShot(weaponId, origin); // spatialisé : on entend d'où ça tire
+    onPlayerShoot: ({ id, origin, direction, maxLength, weaponId, shots }) => {
+      if (!origin) return;
+      const list = Array.isArray(shots) && shots.length > 0 ? shots : [{ direction, maxLength }];
+      const from = new THREE.Vector3(origin.x, origin.y, origin.z);
+      let flashed = false;
+      list.forEach((shot) => {
+        if (!shot.direction) return;
+        const dir = new THREE.Vector3(shot.direction.x, shot.direction.y, shot.direction.z).normalize();
+        // Bouche du canon estimée : devant et un peu sous les yeux du tireur
+        const muzzle = from.clone().addScaledVector(dir, 0.8);
+        muzzle.y -= 0.2;
+        const reach = Number.isFinite(shot.maxLength) ? Math.min(shot.maxLength + 0.05, 60) : 40;
+        const hit = traceShot(from, dir, reach, id);
+        _shotEnd.copy(from).addScaledVector(dir, hit.distance);
+        fx.tracer(muzzle, _shotEnd);
+        if (hit.kind) fx.impact({ point: hit.point, normal: hit.normal, kind: hit.kind === 'body' ? 'body' : 'surface', light: list.length > 1 });
+        if (!flashed) {
+          fx.worldMuzzleFlash(muzzle, weaponId === 'shotgun' ? 0.8 : 0.5);
+          flashed = true;
+        }
+      });
+      audio.playShot(weaponId, origin); // spatialisé : on entend d'où ça tire
     },
     onPlayerLeft: removeOtherPlayer,
     onConnectError: () => {
@@ -1408,7 +2352,8 @@ function startNetwork() {
       setOtherPlayerVisible(id, true);
       snapOtherPlayer(id, position);
     },
-    onHitConfirmed: showHitMarker,
+    onHitConfirmed: handleHitConfirmed,
+    onDamageTaken: handleDamageTaken,
     onYourShield: handleShieldUpdate,
     onPlayerShieldSteps: updatePlayerShieldSteps,
     onYourMoney: handleMoneyUpdate,
@@ -1423,6 +2368,12 @@ function startNetwork() {
     onWeaponPickupRemoved: handleWeaponPickupRemoved,
     onKillFeed: handleKillFeed,
     onScoreboard: (list) => scoreboard.setScores(list),
+    onYourAmmo: handleAmmoUpdate,
+    onYourGrenades: handleGrenadesUpdate,
+    onGrenadeSpawned: handleGrenadeSpawned,
+    onGrenadeExploded: handleGrenadeExploded,
+    onPingPlaced: handlePingPlaced,
+    onPingRemoved: ({ senderId }) => minimap.removePing(senderId),
   });
 }
 
@@ -1438,8 +2389,13 @@ function animate() {
   requestAnimationFrame(animate);
   const delta = Math.min(clock.getDelta(), 0.1);
 
-  // Vitesse effective : ralentie en visée, encore plus accroupi
-  const speedMultiplier = isCrouching ? 0.5 : isAiming ? 0.65 : 1;
+  // Course (endurance) et glissade : mis à jour AVANT le calcul de vitesse
+  slideCooldown = Math.max(0, slideCooldown - delta);
+  updateSprintState(delta);
+  bloom = Math.max(0, bloom - BLOOM_DECAY_PER_SEC * delta);
+
+  // Vitesse effective : ralentie en visée, encore plus accroupi, accélérée en courant
+  const speedMultiplier = isCrouching ? 0.5 : isAiming ? 0.65 : isSprinting ? SPRINT_MULT : 1;
   const speed = BASE_SPEED * speedMultiplier;
 
   // Friction
@@ -1450,20 +2406,34 @@ function animate() {
   direction.x = Number(move.right) - Number(move.left);
   direction.normalize();
 
-  const isMoving = !isDead && !isShopOpen() && (move.forward || move.backward || move.left || move.right);
-  if (!isDead && !isShopOpen()) {
-    if (move.forward || move.backward) velocity.z -= direction.z * speed * 10 * delta;
-    if (move.left || move.right) velocity.x -= direction.x * speed * 10 * delta;
-
+  const isSliding = slideTimer > 0;
+  const isMoving = !isDead && !isOverlayOpen() && (move.forward || move.backward || move.left || move.right);
+  if (!isDead && !isOverlayOpen()) {
     const prevX = camera.position.x;
     const prevZ = camera.position.z;
-    controls.moveRight(-velocity.x * delta);
-    controls.moveForward(-velocity.z * delta);
-    resolveHorizontalCollisions(prevX, prevZ);
+    if (isSliding) {
+      // Glissade : élan dans une direction figée, qui ralentit jusqu'à la fin
+      const t = 1 - slideTimer / SLIDE_DURATION;
+      const slideSpeed = THREE.MathUtils.lerp(SLIDE_SPEED_START, SLIDE_SPEED_END, t);
+      camera.position.x += slideDir.x * slideSpeed * delta;
+      camera.position.z += slideDir.z * slideSpeed * delta;
+      velocity.x = 0;
+      velocity.z = 0;
+      resolveHorizontalCollisions(prevX, prevZ);
+      slideTimer -= delta;
+      if (slideTimer <= 0) endSlide();
+    } else {
+      if (move.forward || move.backward) velocity.z -= direction.z * speed * 10 * delta;
+      if (move.left || move.right) velocity.x -= direction.x * speed * 10 * delta;
+
+      controls.moveRight(-velocity.x * delta);
+      controls.moveForward(-velocity.z * delta);
+      resolveHorizontalCollisions(prevX, prevZ);
+    }
   }
 
   // --- Accroupi : on lisse la hauteur d'yeux cible plutôt que de la changer d'un coup
-  const targetEyeHeight = isCrouching ? CROUCH_EYE_HEIGHT : STAND_EYE_HEIGHT;
+  const targetEyeHeight = slideTimer > 0 ? SLIDE_EYE_HEIGHT : isCrouching ? CROUCH_EYE_HEIGHT : STAND_EYE_HEIGHT;
   currentEyeHeight += (targetEyeHeight - currentEyeHeight) * Math.min(1, 10 * delta);
 
   // --- Gravité / saut : on calcule le sol sous les pieds, puis on applique
@@ -1495,25 +2465,45 @@ function animate() {
   const stepDelta = Math.hypot(camera.position.x - prevStepX, camera.position.z - prevStepZ);
   prevStepX = camera.position.x;
   prevStepZ = camera.position.z;
-  if (!isDead && isGrounded && isMoving && stepDelta < 1.5) {
+  if (!isDead && isGrounded && isMoving && !isSliding && stepDelta < 1.5) {
     // (stepDelta >= 1.5 = téléportation : respawn, pas un vrai déplacement)
     stepDistance += stepDelta;
-    if (stepDistance >= (isCrouching ? CROUCH_STEP_LENGTH : STEP_LENGTH)) {
+    const stepLength = isCrouching ? CROUCH_STEP_LENGTH : isSprinting ? STEP_LENGTH * 1.2 : STEP_LENGTH;
+    if (stepDistance >= stepLength) {
       stepDistance = 0;
-      audio.playFootstep({ crouching: isCrouching });
+      audio.playFootstep({ crouching: isCrouching, sprinting: isSprinting });
     }
   }
   camera.getWorldDirection(listenerDir);
   audio.setListener(camera.position.x, camera.position.y, camera.position.z, listenerDir.x, listenerDir.z);
 
   // --- Visée : zoom du champ de vision + arme recentrée
-  const targetFov = isAiming && !isDead ? AIM_FOV : BASE_FOV;
+  const targetFov = isDead ? BASE_FOV : isAiming ? getAimFov() : isSprinting ? BASE_FOV + 6 : BASE_FOV;
   if (Math.abs(camera.fov - targetFov) > 0.01) {
     camera.fov += (targetFov - camera.fov) * Math.min(1, 12 * delta);
     camera.updateProjectionMatrix();
   }
-  const targetWeaponPos = isAiming ? WEAPON_AIM_POSITION : WEAPON_REST_POSITION;
-  weaponGroup.position.lerp(targetWeaponPos, Math.min(1, 12 * delta));
+  // Plus on zoome, plus la souris ralentit (visée précise à la lunette)
+  controls.pointerSpeed = baseSensitivity * Math.max(0.25, camera.fov / BASE_FOV);
+
+  // Fin du rechargement local (le serveur confirme avec 'your-ammo')
+  if (isReloading && performance.now() - reloadStartedAt >= reloadDurationMs) finishReloadLocally();
+  if (reloadFillEl) {
+    reloadFillEl.style.width = isReloading
+      ? `${Math.min(100, ((performance.now() - reloadStartedAt) / reloadDurationMs) * 100)}%`
+      : '0%';
+  }
+
+  // Animations de l'arme : baissée en courant, inclinée pendant un rechargement,
+  // abaissée brièvement au lancer d'une grenade
+  sprintBlend += ((isSprinting ? 1 : 0) - sprintBlend) * Math.min(1, 8 * delta);
+  reloadBlend += ((isReloading ? Math.sin(Math.min(1, (performance.now() - reloadStartedAt) / reloadDurationMs) * Math.PI) : 0) - reloadBlend) * Math.min(1, 14 * delta);
+  throwKick = Math.max(0, throwKick - delta * 3);
+  _weaponTarget.copy(isAiming && !isSprinting ? WEAPON_AIM_POSITION : WEAPON_REST_POSITION);
+  _weaponTarget.x -= sprintBlend * 0.08;
+  _weaponTarget.y += -sprintBlend * 0.1 - reloadBlend * 0.22 - throwKick * 0.25;
+  _weaponTarget.z += sprintBlend * 0.05 + reloadBlend * 0.06;
+  weaponGroup.position.lerp(_weaponTarget, Math.min(1, 12 * delta));
 
   // --- Léger bob de l'arme en marchant (purement visuel)
   if (isMoving && isGrounded) {
@@ -1535,8 +2525,14 @@ function animate() {
   } else {
     recoilKick = 0;
   }
-  weaponGroup.rotation.x = -recoilKick * 0.35;
+  weaponGroup.rotation.x = -recoilKick * 0.35 - sprintBlend * 0.45 + reloadBlend * 0.5;
+  weaponGroup.rotation.z = sprintBlend * 0.25 - reloadBlend * 0.45;
   weaponGroup.position.z += recoilKick * 0.06;
+  // En visant à la lunette (sniper), on ne voit plus l'arme : on regarde dans la lunette
+  const hasWeapon = Boolean(myWeapons[currentSlot]);
+  const scopedNow = isAiming && Boolean(WEAPON_DEFS[myWeapons[currentSlot]?.id]?.zoomRatio) && camera.fov < BASE_FOV * 0.6;
+  weaponGroup.visible = hasWeapon && !isDead && !scopedNow;
+  updateCrosshair(delta);
 
   // Autres joueurs : on lisse leur déplacement plutôt que de les téléporter
   // à chaque message reçu du serveur (ça "saccaderait" sinon) — mais pas
@@ -1569,7 +2565,7 @@ function animate() {
   // Prompt "E — Ramasser [arme]" : visible seulement à portée d'une arme au
   // sol, mort et boutique ouverte exclues (comme pour la boutique).
   if (pickupPromptEl) {
-    const nearbyId = !isDead && !isShopOpen() ? findClosestGroundWeapon() : null;
+    const nearbyId = !isDead && !isOverlayOpen() ? findClosestGroundWeapon() : null;
     if (nearbyId) {
       const entry = groundWeaponPickups.get(nearbyId);
       pickupPromptEl.textContent = `${keyLabel(keybinds.pickupWeapon)} — Ramasser ${weaponLabel(entry.weaponId)}`;
@@ -1579,6 +2575,16 @@ function animate() {
     }
   }
 
+  // Grenades en vol, explosions/fumées, marqueurs de ping et carte ouverte
+  updateGrenades(delta);
+  updateVisualEffects(delta);
+  minimap.updateMarkers(camera);
+  minimap.draw();
+
+  ambiance.update(delta, clock.elapsedTime); // ciel, lumières, brume, ombres : après le déplacement de la caméra
+  fx.update(delta);
+  updateGroundLoot(performance.now());
+  hudFx.update(performance.now(), localHp, MAX_HP, isDead, delta);
   composer.render();
 }
 animate();
@@ -1594,3 +2600,9 @@ window.addEventListener('resize', () => {
 // déplacements que les tirs (portée coupée par nearestObstacleDistance côté
 // client, et vérifiée en autorité côté serveur dans nearestObstacleDistance
 // de server.js — les deux listes de boîtes doivent rester identiques).
+
+// Outils de test : uniquement avec `npm run dev` (retirés du build de production).
+// Dans la console du navigateur : __mw.fx.impact(...), __mw.hudFx.showDamageNumber(...), etc.
+if (import.meta.env.DEV) {
+  window.__mw = { fx, hudFx, ambiance, camera, scene, THREE, otherPlayers, collisionMeshes, showMuzzleFlash, ejectShellFor, addGroundVest, addGroundWeaponPickup, groundVestMeshes, groundWeaponPickups };
+}
