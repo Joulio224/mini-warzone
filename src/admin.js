@@ -141,13 +141,6 @@ export function formatRemaining(ms) {
   return `${pad(m)} min ${pad(s)} s`;
 }
 
-function formatEnd(ms) {
-  const date = new Date(ms);
-  const time = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-  if (date.toDateString() === new Date().toDateString()) return time;
-  return `${date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} ${time}`;
-}
-
 // --- Écran de blocage pour le joueur sanctionné ----------------------------------
 // onBlock() est appelé quand le blocage démarre (lobby.js s'en sert pour couper
 // la partie en cours). Quand la sanction prend fin (expirée ou levée par un

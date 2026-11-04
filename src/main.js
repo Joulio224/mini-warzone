@@ -34,6 +34,9 @@ import {
   GRENADE_STEP,
   stepGrenade,
   currentSpread,
+  bulletOffsetY,
+  BALLISTIC_STEP,
+  DEFAULT_RANGE,
   BLOOM_PER_SHOT,
   BLOOM_MAX,
   BLOOM_DECAY_PER_SEC,
@@ -225,7 +228,12 @@ mapLoader.load(
     scene.remove(fallbackGround);
     gltf.scene.updateMatrixWorld(true);
     disableTallWallShadows(gltf.scene); // les murs d'enceinte de 100 m n'ombrent pas l'arène
-    ambiance.registerObject(gltf.scene);
+    ambiance.registerObject(scene); // (ombres en cascade : tous les matériaux doivent être préparés AVANT la compilation)
+    // Compile maintenant les shaders de tout ce qui est déjà dans la scène, en
+    // tâche de fond, plutôt qu'au premier affichage (sinon la 1re image de
+    // chaque nouveauté se fige le temps de la compilation).
+    if (renderer.compileAsync) renderer.compileAsync(scene, camera).catch(() => {});
+    else renderer.compile(scene, camera);
 
     const walkableMeshes = [];
     gltf.scene.traverse((child) => {
@@ -585,6 +593,62 @@ const LOOT_BOUNCE_MS = 300; // petit rebond à l'atterrissage (purement visuel)
 const PICKUP_VERTICAL_REACH = 1.2; // doit rester identique à server.js
 const WEAPON_PICKUP_INTERACT_RADIUS = 1.8; // doit rester proche de WEAPON_PICKUP_RADIUS côté serveur
 
+// Lueur d'un objet au sol : un sprite additif, PAS une lumière. Chaque
+// PointLight ajoutée ou retirée de la scène change le nombre de lumières, ce qui
+// oblige three.js à recompiler les shaders de TOUS les matériaux éclairés (la
+// map, les joueurs, l'arme...) : sur certaines machines, l'image se figeait
+// plusieurs secondes à chaque mort. Les sprites ne touchent pas aux shaders.
+let lootGlowTexture = null;
+const lootGlowMaterials = new Map(); // couleur -> SpriteMaterial partagé (jamais libéré : 3-4 au total)
+function createLootGlow(colorHex) {
+  if (!lootGlowTexture) {
+    const size = 64;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const c = canvas.getContext('2d');
+    const g = c.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    g.addColorStop(0, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.35, 'rgba(255,255,255,0.35)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = g;
+    c.fillRect(0, 0, size, size);
+    lootGlowTexture = new THREE.CanvasTexture(canvas);
+  }
+  let material = lootGlowMaterials.get(colorHex);
+  if (!material) {
+    material = new THREE.SpriteMaterial({
+      map: lootGlowTexture,
+      color: colorHex,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false,
+    });
+    lootGlowMaterials.set(colorHex, material);
+  }
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(1.1, 1.1, 1);
+  sprite.position.y = 0.3;
+  sprite.userData.sharedMaterial = true;
+  return sprite;
+}
+
+// Libère la mémoire GPU d'un objet qui disparaît (butin ramassé ou expiré,
+// joueur parti). Les géométries et matériaux de chaque objet sont créés pour lui
+// seul ; sont épargnés les matériaux marqués `sharedMaterial` (lueurs) et les
+// textures (l'emoji d'un visage est mis en cache et partagé : material.dispose()
+// ne libère pas les textures).
+function disposeObject3D(root) {
+  root.traverse((child) => {
+    if (child.userData?.sharedMaterial) return;
+    child.geometry?.dispose();
+    const materials = Array.isArray(child.material) ? child.material : child.material ? [child.material] : [];
+    materials.forEach((m) => m.dispose());
+  });
+}
+
 function buildVestPickupMesh() {
   const group = new THREE.Group();
   const mat = new THREE.MeshStandardMaterial({ color: 0x2f5fa8, roughness: 0.5, metalness: 0.2 });
@@ -597,9 +661,7 @@ function buildVestPickupMesh() {
     strap.position.set(x, 0.3, 0);
     group.add(strap);
   });
-  const beacon = new THREE.PointLight(0x6fb3ff, 1.2, 4, 2);
-  beacon.position.y = 0.6;
-  group.add(beacon);
+  group.add(createLootGlow(0x6fb3ff));
   return group;
 }
 
@@ -613,16 +675,8 @@ function buildWeaponPickupMesh(weaponId, rarity) {
   group.rotation.x = Math.PI / 2; // à plat sur le sol plutôt qu'en position "en main"
   group.position.y = 0.12;
 
-  const beacon = new THREE.PointLight(
-    rarity && rarity !== 'gray' ? rarityColor(rarity) : 0xffffff,
-    1,
-    3.5,
-    2
-  );
-  beacon.position.y = 0.3;
-
   const holder = new THREE.Group();
-  holder.add(group, beacon);
+  holder.add(group, createLootGlow(rarity && rarity !== 'gray' ? rarityColor(rarity) : 0xffffff));
   return holder;
 }
 
@@ -682,6 +736,7 @@ function removeGroundVest(id) {
   const entry = groundVestMeshes.get(id);
   if (!entry) return;
   scene.remove(entry.mesh);
+  disposeObject3D(entry.mesh);
   groundVestMeshes.delete(id);
 }
 function handleCurrentVests(items) {
@@ -703,6 +758,7 @@ function removeGroundWeaponPickup(id) {
   const entry = groundWeaponPickups.get(id);
   if (!entry) return;
   scene.remove(entry.mesh);
+  disposeObject3D(entry.mesh);
   groundWeaponPickups.delete(id);
 }
 function handleCurrentWeaponPickups(items) {
@@ -1227,21 +1283,6 @@ function getGroundY(x, z) {
 // pouvoir glisser le long d'un mur au lieu de se bloquer net dessus).
 const PLAYER_RADIUS = 0.4;
 
-const movementRaycaster = new THREE.Raycaster();
-
-const movementRayDirections = [
-  new THREE.Vector3(1, 0, 0),
-  new THREE.Vector3(-1, 0, 0),
-  new THREE.Vector3(0, 0, 1),
-  new THREE.Vector3(0, 0, -1),
-  new THREE.Vector3(1, 0, 1).normalize(),
-  new THREE.Vector3(1, 0, -1).normalize(),
-  new THREE.Vector3(-1, 0, 1).normalize(),
-  new THREE.Vector3(-1, 0, -1).normalize(),
-];
-
-const movementRayOrigin = new THREE.Vector3();
-
 function collidesAt(x, z) {
   if (collisionBoxes.length === 0) return false;
 
@@ -1251,7 +1292,7 @@ function collidesAt(x, z) {
 
   for (const box of collisionBoxes) {
     // Ignore walls that are entirely above or below the player's body.
-    if (box.max.y <= playerMinY + 0.05 || box.min.y >= playerMaxY) continue;
+    if (box.max.y < playerMinY || box.min.y > playerMaxY) continue;
 
     // Circle (player) versus axis-aligned box, in the horizontal plane.
     const closestX = THREE.MathUtils.clamp(x, box.min.x, box.max.x);
@@ -2109,6 +2150,7 @@ function removeOtherPlayer(id) {
   const entry = otherPlayers.get(id);
   if (!entry) return;
   scene.remove(entry.mesh);
+  disposeObject3D(entry.mesh);
   otherPlayers.delete(id);
 }
 
@@ -2139,7 +2181,7 @@ function snapOtherPlayer(id, position) {
 const shotRaycaster = new THREE.Raycaster();
 const BODY_SPHERES = [[0.45, 0.38], [1.1, 0.4], [1.65, 0.27]]; // [hauteur depuis les pieds, rayon]
 const _oc = new THREE.Vector3();
-function traceShot(origin, dir, maxDist = 60, ignoreId = null) {
+function traceStraight(origin, dir, maxDist = DEFAULT_RANGE, ignoreId = null) {
   const result = { distance: maxDist, kind: null, point: new THREE.Vector3(), normal: new THREE.Vector3() };
   if (collisionMeshes.length > 0) {
     shotRaycaster.set(origin, dir);
@@ -2173,6 +2215,66 @@ function traceShot(origin, dir, maxDist = 60, ignoreId = null) {
     });
   });
   return result;
+}
+
+// Trajectoire complète d'un tir. Sans balistique : une ligne droite. Avec
+// (sniper) : la balle suit la courbe de bulletOffsetY, testée par segments de
+// 10 m (comme le serveur). Renvoie { distance, kind, point, normal } où distance
+// est mesurée le long de la visée, et `path` : points à relier pour le traceur.
+const _segFrom = new THREE.Vector3();
+const _segTo = new THREE.Vector3();
+const _segDir = new THREE.Vector3();
+const TRACER_PATH_STEP = 40; // le traceur courbe est dessiné par segments de 40 m
+function traceShot(origin, dir, maxDist = DEFAULT_RANGE, ignoreId = null, ballistics = null) {
+  if (!ballistics) {
+    const straight = traceStraight(origin, dir, maxDist, ignoreId);
+    straight.path = null;
+    return straight;
+  }
+  let s0 = 0;
+  _segFrom.copy(origin);
+  const result = { distance: maxDist, kind: null, point: new THREE.Vector3(), normal: new THREE.Vector3(), path: null };
+  while (s0 < maxDist) {
+    const s1 = Math.min(maxDist, s0 + BALLISTIC_STEP);
+    _segTo.set(origin.x + dir.x * s1, origin.y + dir.y * s1 + bulletOffsetY(ballistics, s1), origin.z + dir.z * s1);
+    _segDir.copy(_segTo).sub(_segFrom);
+    const len = _segDir.length();
+    if (len < 1e-6) break;
+    _segDir.multiplyScalar(1 / len);
+    const hit = traceStraight(_segFrom, _segDir, len, ignoreId);
+    if (hit.kind) {
+      result.distance = s0 + hit.distance;
+      result.kind = hit.kind;
+      result.point.copy(hit.point);
+      result.normal.copy(hit.normal);
+      break;
+    }
+    _segFrom.copy(_segTo);
+    s0 = s1;
+  }
+  // points du traceur : tous les 40 m le long de la courbe, jusqu'à l'arrivée
+  const end = result.kind ? result.point.clone() : new THREE.Vector3(origin.x + dir.x * result.distance, origin.y + dir.y * result.distance + bulletOffsetY(ballistics, result.distance), origin.z + dir.z * result.distance);
+  const path = [];
+  for (let s = TRACER_PATH_STEP; s < result.distance - 5; s += TRACER_PATH_STEP) {
+    path.push(new THREE.Vector3(origin.x + dir.x * s, origin.y + dir.y * s + bulletOffsetY(ballistics, s), origin.z + dir.z * s));
+  }
+  path.push(end);
+  result.path = path;
+  return result;
+}
+
+// Dessine le traceur d'un tir : depuis `from` (bouche) le long de `hit.path`
+// (courbe du sniper) ou en ligne droite jusqu'à `fallbackEnd`.
+function drawTracer(from, hit, fallbackEnd) {
+  if (hit.path) {
+    let a = from;
+    hit.path.forEach((b) => {
+      fx.tracer(a, b);
+      a = b;
+    });
+  } else {
+    fx.tracer(from, fallbackEnd);
+  }
 }
 
 // Bouche du canon en main (coordonnées monde) : d'où partent les traceurs
@@ -2255,9 +2357,9 @@ function tryShoot(now) {
   for (let i = 0; i < def.pellets; i++) {
     const dir = perturbDirection(base, spread, new THREE.Vector3());
     pelletDirs.push({ x: dir.x, y: dir.y, z: dir.z });
-    const hit = traceShot(origin, dir, 60, null);
+    const hit = traceShot(origin, dir, def.range ?? DEFAULT_RANGE, null, def.ballistics);
     _shotEnd.copy(origin).addScaledVector(dir, hit.distance);
-    fx.tracer(_muzzleLocal, _shotEnd); // traceur fin, depuis la bouche du canon
+    drawTracer(_muzzleLocal, hit, _shotEnd); // traceur fin, depuis la bouche du canon
     if (hit.kind) fx.impact({ point: hit.point, normal: hit.normal, kind: hit.kind === 'body' ? 'body' : 'surface', light: def.pellets > 1 });
   }
   showMuzzleFlash(equipped.id);
@@ -2326,10 +2428,12 @@ function startNetwork() {
         // Bouche du canon estimée : devant et un peu sous les yeux du tireur
         const muzzle = from.clone().addScaledVector(dir, 0.8);
         muzzle.y -= 0.2;
-        const reach = Number.isFinite(shot.maxLength) ? Math.min(shot.maxLength + 0.05, 60) : 40;
-        const hit = traceShot(from, dir, reach, id);
+        const shooterDef = WEAPON_DEFS[weaponId];
+        const range = shooterDef?.range ?? DEFAULT_RANGE;
+        const reach = Number.isFinite(shot.maxLength) ? Math.min(shot.maxLength + 0.05, range) : 40;
+        const hit = traceShot(from, dir, reach, id, shooterDef?.ballistics ?? null);
         _shotEnd.copy(from).addScaledVector(dir, hit.distance);
-        fx.tracer(muzzle, _shotEnd);
+        drawTracer(muzzle, hit, _shotEnd);
         if (hit.kind) fx.impact({ point: hit.point, normal: hit.normal, kind: hit.kind === 'body' ? 'body' : 'surface', light: list.length > 1 });
         if (!flashed) {
           fx.worldMuzzleFlash(muzzle, weaponId === 'shotgun' ? 0.8 : 0.5);
@@ -2596,13 +2700,17 @@ window.addEventListener('resize', () => {
   composer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// Note pour plus tard : murs/caisses bloquent maintenant aussi bien les
-// déplacements que les tirs (portée coupée par nearestObstacleDistance côté
-// client, et vérifiée en autorité côté serveur dans nearestObstacleDistance
-// de server.js — les deux listes de boîtes doivent rester identiques).
+// Rappel : murs et caisses bloquent aussi bien les déplacements que les tirs
+// (traceShot côté client pour l'affichage, nearestObstacleDistance /
+// traceShotPath dans server.js pour les vrais dégâts). Les boîtes de collision
+// côté client et côté serveur doivent rester identiques (map-colliders.glb).
 
 // Outils de test : uniquement avec `npm run dev` (retirés du build de production).
 // Dans la console du navigateur : __mw.fx.impact(...), __mw.hudFx.showDamageNumber(...), etc.
 if (import.meta.env.DEV) {
-  window.__mw = { fx, hudFx, ambiance, camera, scene, THREE, otherPlayers, collisionMeshes, showMuzzleFlash, ejectShellFor, addGroundVest, addGroundWeaponPickup, groundVestMeshes, groundWeaponPickups };
+  window.__mw = {
+    fx, hudFx, ambiance, camera, scene, renderer, THREE,
+    otherPlayers, collisionMeshes, groundVestMeshes, groundWeaponPickups,
+    showMuzzleFlash, ejectShellFor, traceShot, drawTracer, addGroundVest, addGroundWeaponPickup,
+  };
 }

@@ -208,7 +208,6 @@ const MAX_TRACERS = 24;
 const MAX_WORLD_FLASHES = 8;
 
 const Z_AXIS = new THREE.Vector3(0, 0, 1);
-const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
 // options :
 //   scene, camera, renderer
@@ -252,6 +251,10 @@ export function createFx({ scene, camera, renderer, getDaylight = () => 1, getFl
   );
   shells.frustumCulled = false;
   shells.count = MAX_SHELLS;
+  // Crée tout de suite le tableau de couleurs par instance : sinon il n'apparaît
+  // qu'à la première douille, ce qui change la variante du shader et le fait
+  // recompiler en plein tir.
+  shells.setColorAt(0, new THREE.Color(0xffffff));
   root.add(shells);
   const shellState = Array.from({ length: MAX_SHELLS }, () => ({ alive: false }));
   let shellCursor = 0;
@@ -303,8 +306,6 @@ export function createFx({ scene, camera, renderer, getDaylight = () => 1, getFl
   const _pos = new THREE.Vector3();
   const _scale = new THREE.Vector3();
   const _t = new THREE.Vector3();
-  const _u = new THREE.Vector3();
-  const _v = new THREE.Vector3();
 
   function addDecal(point, normal, size) {
     _q.setFromUnitVectors(Z_AXIS, normal);
@@ -454,14 +455,11 @@ export function createFx({ scene, camera, renderer, getDaylight = () => 1, getFl
     f.material.opacity = 1;
   }
 
-  const _right = new THREE.Vector3();
   function update(delta) {
     // échelle des points : pixels par mètre à 1 m de la caméra
-    const pixelRatio = renderer.getPixelRatio();
     const scale = (renderer.domElement.height / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
     sparks.material.uniforms.uScale.value = scale;
     dust.material.uniforms.uScale.value = scale;
-    void pixelRatio;
 
     // la poussière suit la lumière : claire le jour, sombre la nuit
     const daylight = getDaylight();
@@ -486,9 +484,6 @@ export function createFx({ scene, camera, renderer, getDaylight = () => 1, getFl
       if (f.life <= 0) f.sprite.visible = false;
       else f.material.opacity = f.life / 0.06;
     });
-    void _right;
-    void _u;
-    void _v;
   }
 
   return {

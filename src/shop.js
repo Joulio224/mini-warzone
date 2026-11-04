@@ -126,8 +126,6 @@ function buildCatalog() {
 // d'inventaire (rarityColor/rarityLabel).
 export const SHOP_CATALOG = buildCatalog();
 
-const CATEGORY_LABELS = { weapon: 'Armes', vest: 'Gilets', utility: 'Équipement', ability: 'Capacités' };
-
 // --- État interne du module ------------------------------------------------
 let shopOpen = false;
 let activeCategory = 'weapon';

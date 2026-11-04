@@ -39,6 +39,17 @@ sauter pendant la glissade garde l'élan.
 murs, pas de dégâts aux coéquipiers en mode Équipes) ; le fumigène crée un
 nuage de 14 s qui bloque la vue.
 
+**Chute de balle (sniper)** : la balle du sniper suit une courbe au lieu d'une
+ligne droite. Le tir reste instantané (pas de temps de vol, donc rien à
+anticiper sur une cible qui bouge), mais il est « réglé » à 50 m : à cette
+distance la balle arrive pile sur la visée, puis elle tombe de plus en plus :
+−0,2 m à 100 m, −0,6 m à 150 m, −1,2 m à 200 m (une tête fait ~0,5 m). Il faut
+donc viser un peu au-dessus de la cible à longue distance. La portée du sniper
+passe à 250 m. Les autres armes restent en ligne droite. Réglages : `ballistics`
+(vitesse de sortie en m/s, distance de réglage en m) et `range` dans
+`src/weapons.js` **et** dans `WEAPON_DEFS` de `server.js` (valeurs identiques) ;
+une vitesse plus basse accentue la chute.
+
 **Butin au sol** : les armes et gilets d'un joueur mort tombent par terre (chute
 avec petit rebond) et disparaissent au bout d'**1 minute**, comptée à partir du
 moment où ils touchent le sol (et qui repart de zéro chaque fois qu'un objet
@@ -168,6 +179,20 @@ Netlify ferait échouer le build en les retrouvant dans le résultat.
 - `src/minimap.js` — carte et pings d'équipe
 - `src/map-align.js` — place la map visible au niveau du sol des collisions (Y = 0)
 - `firestore.rules` — règles de sécurité Firestore
+
+## Performances : ne jamais ajouter ni retirer de lumière en cours de partie
+
+Chaque fois que le nombre de lumières de la scène change (`PointLight`,
+`DirectionalLight`...), three.js doit recompiler les shaders de tous les
+matériaux éclairés — la map, les joueurs, l'arme — et l'image se fige de
+quelques centaines de ms à plusieurs secondes selon la machine. Les objets au sol
+avaient chacun une `PointLight` : une mort faisait donc geler le jeu. Ils
+utilisent maintenant une lueur en sprite (`createLootGlow`). Règles à garder :
+toute lumière est créée une seule fois au démarrage (intensité 0 si besoin, comme
+`muzzleFlashLight` et `blastLight`) ; pour un effet lumineux ponctuel, préférer un
+sprite additif. Les shaders sont précompilés après le chargement de la map
+(`renderer.compileAsync`), et les objets retirés de la scène sont libérés
+(`disposeObject3D`).
 
 ## Outils de test (mode dev uniquement)
 

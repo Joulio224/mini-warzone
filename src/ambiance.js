@@ -400,7 +400,7 @@ export function createAmbiance({ scene, camera, renderer, cycle = true, mist = t
 
     // Carte d'environnement : refaite quand le ciel a assez changé
     const phaseGap = Math.min(Math.abs(currentPhase - lastEnvPhase), 1 - Math.abs(currentPhase - lastEnvPhase));
-    if (lastEnvPhase < 0 || phaseGap > 0.008) {
+    if (lastEnvPhase < 0 || phaseGap > 0.02) { // ~18 s : le ciel change lentement, et chaque régénération alloue des textures
       lastEnvPhase = currentPhase;
       const eu = envSky.material.uniforms;
       eu.topColor.value.copy(state.top);
@@ -410,7 +410,7 @@ export function createAmbiance({ scene, camera, renderer, cycle = true, mist = t
       eu.moonDir.value.copy(moonDir);
       eu.nightAmount.value = nightAmount;
       const previous = envTarget;
-      envTarget = pmrem.fromScene(envScene, 0.02, 0.1, 100);
+      envTarget = pmrem.fromScene(envScene, 0, 0.1, 100);
       scene.environment = envTarget.texture;
       if (previous) previous.dispose();
     }

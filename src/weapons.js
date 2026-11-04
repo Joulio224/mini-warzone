@@ -89,6 +89,10 @@ export const WEAPON_DEFS = {
     recoil: 0.03,
     basePrice: 150,
     zoomRatio: 0.25, // lunette : le champ de vision tombe à 25 % de la normale
+    // Chute de la balle : vitesse de sortie (m/s) et distance de réglage (m) à
+    // laquelle elle coupe la ligne de visée. Voir bulletOffsetY().
+    ballistics: { speed: 350, zero: 50 },
+    range: 250, // portée de la balle (m) ; les autres armes ont DEFAULT_RANGE
     slot: 1,
     color: 0x24342a,
   },
@@ -114,6 +118,29 @@ export function currentSpread(def, { aiming, moving, airborne, crouching, bloom 
   else if (moving) base *= SPREAD_MOVE_MULT;
   else if (crouching) base *= SPREAD_CROUCH_MULT;
   return base + def.spread.hip * SPREAD_BLOOM_FACTOR * bloom;
+}
+
+// --- Balistique (sniper) -----------------------------------------------------
+// Le tir reste instantané (pas de temps de vol : rien à "anticiper" sur une cible
+// qui bouge), mais la balle suit une courbe : à `s` mètres de la bouche elle est
+// décalée verticalement de bulletOffsetY(s) par rapport à la visée.
+//
+// Ordres de grandeur : vraies balles de sniper 800-900 m/s ; Warzone, vitesses
+// de projectile de 400 à 1000 m/s selon l'arme, chute nulle de près et sensible
+// au-delà de ~150-200 m. La map ne fait que ~150 m de large, donc on prend une
+// vitesse plus basse (350 m/s) pour que la chute se sente sans gêner :
+//   50 m → 0 (réglé)  ·  100 m → -0,2 m  ·  150 m → -0,6 m  ·  200 m → -1,2 m
+// (un joueur fait ~1,8 m de haut, une tête ~0,5 m). Doit rester identique à
+// bulletOffsetY / BALLISTIC_* dans server.js.
+export const BALLISTIC_GRAVITY = 9.81;
+export const BALLISTIC_STEP = 10; // la courbe est testée par segments droits de 10 m
+export const DEFAULT_RANGE = 60; // portée des tirs sans balistique (effets et tracés)
+
+export function bulletOffsetY(ballistics, s) {
+  if (!ballistics) return 0;
+  const zeroRise = (0.5 * BALLISTIC_GRAVITY * ballistics.zero) / (ballistics.speed * ballistics.speed);
+  const drop = 0.5 * BALLISTIC_GRAVITY * (s / ballistics.speed) * (s / ballistics.speed);
+  return zeroRise * s - drop;
 }
 
 // --- Grenades --------------------------------------------------------------
