@@ -54,6 +54,26 @@ export const DEFAULT_KEYBINDS = {
   scoreboard: 'Tab',
 };
 
+// Touches par défaut qui doivent se reconnaître à leur LETTRE (ce qui est imprimé
+// sur la touche) plutôt qu'à leur position : sur un clavier AZERTY, la touche
+// marquée « M » est à la position de `;` d'un clavier QWERTY (e.code vaut alors
+// 'Semicolon', pas 'KeyM'), donc la carte ne s'ouvrait jamais. Les autres touches
+// par défaut (W/Z A/Q S D C E R G H P B...) sont soit à la même position sur les
+// deux claviers, soit voulues comme positions (ZQSD/WASD pour se déplacer).
+// Dès que le joueur réassigne la touche dans Paramètres, c'est le code physique
+// enregistré qui compte, comme pour toutes les autres.
+const DEFAULT_KEY_CHARACTERS = { map: 'm' };
+
+// La touche pressée correspond-elle à cette action ? À utiliser à la place de
+// `e.code === keybinds[actionId]` pour les actions de DEFAULT_KEY_CHARACTERS.
+export function matchesAction(e, actionId, keybinds) {
+  const character = DEFAULT_KEY_CHARACTERS[actionId];
+  if (character && keybinds[actionId] === DEFAULT_KEYBINDS[actionId]) {
+    return typeof e.key === 'string' && e.key.toLowerCase() === character;
+  }
+  return e.code === keybinds[actionId];
+}
+
 // Échap est réservé par le navigateur (sortie du pointer lock) : jamais
 // assignable à une action, même si l'utilisateur essaie.
 const RESERVED_CODES = new Set(['Escape']);

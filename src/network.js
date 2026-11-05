@@ -33,8 +33,8 @@ let socket = null;
 // mode/team : 'team' + une couleur si le créateur du groupe a activé le mode
 // Équipes et assigné ce joueur — dans ce cas les coéquipiers ne peuvent pas
 // se tirer dessus (voir server.js). 'solo'/null sinon (comportement inchangé).
-export function connectToServer(pseudo, appearance, groupId, mode, team, handlers) {
-  socket = io(SERVER_URL);
+export function connectToServer(pseudo, appearance, groupId, mode, team, handlers, idToken) {
+  socket = io(SERVER_URL, { auth: { idToken } });
 
   socket.on('connect', () => {
     socket.emit('join', { pseudo, appearance, groupId, mode, team });
@@ -176,6 +176,16 @@ export function connectToServer(pseudo, appearance, groupId, mode, team, handler
     handlers.onPingRemoved?.(data);
   });
 
+  socket.on('admin-player-list', (players) => {
+    handlers.onAdminPlayerList?.(players);
+  });
+  socket.on('admin-action-result', (result) => {
+    handlers.onAdminActionResult?.(result);
+  });
+  socket.on('admin-noclip', (data) => {
+    handlers.onAdminNoclip?.(Boolean(data?.enabled));
+  });
+
   socket.on('connect_error', (error) => {
     console.error('[network] Connexion au serveur temps réel impossible :', error.message);
     handlers.onConnectError?.(error);
@@ -263,4 +273,15 @@ export function isConnected() {
 export function disconnectFromServer() {
   socket?.disconnect();
   socket = null;
+}
+
+// Commandes réservées aux administrateurs : le serveur revérifie le token et les droits.
+export function sendAdminAction(action) {
+  if (!socket?.connected) return;
+  socket.emit('admin-action', action);
+}
+
+export function requestAdminPlayers() {
+  if (!socket?.connected) return;
+  socket.emit('admin-list-players');
 }

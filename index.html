@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Mini Warzone</title>
   <style>
+    #sanction-screen[hidden] { display: none !important; }
     html, body {
       margin: 0;
       overflow: hidden;
@@ -1015,6 +1016,14 @@
     .setting-row input[type="range"] { width: 200px; padding: 0; border: none; background: transparent; accent-color: #e63946; }
     .setting-row input[type="checkbox"] { width: 20px; height: 20px; padding: 0; accent-color: #e63946; }
     .settings-gap { margin-top: 24px; }
+    .admin-user-list { list-style:none; padding:0; display:grid; gap:8px; margin:14px 0; }
+    .admin-user { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:9px 11px; border:1px solid rgba(255,255,255,.12); border-radius:8px; }
+    .admin-user-actions { display:flex; gap:6px; margin-left:auto; }
+    .admin-badge { font-size:11px; padding:3px 7px; border-radius:20px; background:#374151; }
+    .admin-badge-admin { background:#1d4ed8; } .admin-badge-ban { background:#991b1b; } .admin-badge-suspend { background:#92400e; }
+    #admin-sanction-form { display:grid; gap:10px; padding:14px; border:1px solid rgba(255,255,255,.14); border-radius:9px; }
+    #admin-sanction-form label { display:grid; gap:5px; }
+    #admin-sanction-form input,#admin-sanction-form select,#admin-user-filter { padding:9px; border-radius:6px; border:1px solid #64748b; background:#111827; color:white; }
     .keybind-row {
       display: flex;
       justify-content: space-between;
@@ -1475,6 +1484,32 @@
           <button id="settings-reset" type="button" class="secondary">Réinitialiser les réglages</button>
           <h3 class="settings-gap">Touches</h3>
           <div id="keybind-list" class="keybind-list"></div>
+          <section id="admin-section" class="lobby-section" hidden style="margin-top:28px">
+            <h2>Administration des comptes</h2>
+            <p>Gestion des bannissements et suspensions.</p>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input id="admin-user-filter" type="search" placeholder="Rechercher un joueur…" />
+              <button id="admin-refresh" type="button" class="secondary">Actualiser</button>
+            </div>
+            <ul id="admin-user-list" class="admin-user-list"></ul>
+            <form id="admin-sanction-form" hidden>
+              <h3 id="admin-sanction-target"></h3>
+              <label>Sanction <select id="admin-sanction-kind">
+                <option value="ban">Bannissement définitif</option>
+                <option value="3600000">Suspension 1 heure</option>
+                <option value="86400000">Suspension 24 heures</option>
+                <option value="604800000">Suspension 7 jours</option>
+                <option value="custom">Durée personnalisée</option>
+              </select></label>
+              <div id="admin-custom-row" hidden>
+                <input id="admin-custom-amount" type="number" min="1" value="1" />
+                <select id="admin-custom-unit"><option value="h">Heures</option><option value="m">Minutes</option><option value="d">Jours</option></select>
+              </div>
+              <label>Motif <input id="admin-reason" maxlength="200" placeholder="Motif de la sanction" /></label>
+              <div style="display:flex;gap:8px"><button type="submit">Appliquer</button><button id="admin-cancel" type="button" class="secondary">Annuler</button></div>
+              <p id="admin-error" class="error"></p>
+            </form>
+          </section>
           <button id="keybind-reset" type="button" class="secondary">Réinitialiser les touches</button>
           <p id="keybind-error" class="error"></p>
         </div>
@@ -1496,10 +1531,19 @@
     </main>
   </div>
 
+  <div id="sanction-screen" hidden style="position:fixed;inset:0;z-index:2000;background:rgba(8,10,16,.98);color:white;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;font-family:system-ui,sans-serif">
+    <h1 id="sanction-title">Compte sanctionné</h1>
+    <p id="sanction-message"></p>
+    <p id="sanction-countdown"></p>
+    <button id="sanction-logout" type="button">Se déconnecter</button>
+  </div>
+
   <div id="menu">
     <h1>Mini Warzone</h1>
     <p id="menu-help">ZQSD/WASD pour bouger, souris pour regarder, clic pour tirer, R pour recharger, Maj pour courir, G/H pour les grenades, M pour la carte, 1/2 pour changer d'arme, P pour utiliser un gilet, B pour la boutique, Échap pour sortir</p>
     <button id="play-button" disabled>Chargement…</button>
+    <button id="resume-button" type="button" hidden>Reprendre le jeu</button>
+    <button id="admin-menu-button" type="button" hidden>Admin Panel</button>
     <button id="quit-button" class="secondary" type="button">Quitter la partie</button>
   </div>
 

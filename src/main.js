@@ -5,7 +5,11 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { auth } from './firebase.js';
+import { auth, db } from './firebase.js';
+import { initSanctionScreen, listenOwnSanction } from './admin.js';
+import { signOutUser } from './auth.js';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import {
   connectToServer,
   sendMove,
@@ -19,11 +23,14 @@ import {
   sendPlacePing,
   sendRemovePing,
   getMyId,
+  sendAdminAction,
+  requestAdminPlayers,
+  disconnectFromServer,
 } from './network.js';
 import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
 import { getAppearance, getEmojiTexture, sanitizeAppearance, DEFAULT_APPEARANCE } from './appearance.js';
 import { getActiveGroupId, getActiveMode, getActiveTeam } from './game-session.js';
-import { getKeybinds, keyLabel } from './keybinds.js';
+import { getKeybinds, keyLabel, matchesAction } from './keybinds.js';
 import { getSettings } from './settings.js';
 import { audio } from './audio.js';
 import { createScoreboard } from './scoreboard.js';
@@ -57,6 +64,7 @@ import { createAmbiance } from './ambiance.js';
 import { createFx } from './fx.js';
 import { createHudFx } from './hudfx.js';
 import { computeMapOffsetY, disableTallWallShadows } from './map-align.js';
+import { initGameAdminPanel } from './game-admin.js';
 // Toutes les données de la map qui ne sont pas de la géométrie visuelle pure
 // (boîtes de collision, spawns d'équipe, lumières d'ambiance) — doit rester identique à
 // mini-warzone-server/map-data.json. La géométrie visible, elle, vient de
@@ -369,8 +377,56 @@ applySettings();
   document.addEventListener(type, () => audio.unlock(), { once: true });
 });
 
+let networkStarted = false;
 const menuEl = document.getElementById('menu');
 const quitButton = document.getElementById('quit-button');
+const resumeButton = document.getElementById('resume-button');
+const adminMenuButton = document.getElementById('admin-menu-button');
+const gameAdminPanel = initGameAdminPanel({
+  sendAction: sendAdminAction,
+  refreshPlayers: requestAdminPlayers,
+});
+const sanctionScreen = initSanctionScreen({
+  onBlock: () => {
+    disconnectFromServer();
+    networkStarted = false;
+    if (isShopOpen()) closeShop();
+    if (minimap.isOpen()) minimap.close();
+    controls.unlock();
+  },
+  onLogout: signOutUser,
+});
+let ownSanctionUnsub = null;
+let isAdminUser = false;
+let adminProfileUnsub = null;
+onAuthStateChanged(auth, (user) => {
+  window.__miniWarzoneAdminUser = user ? { uid: user.uid, pseudo: user.displayName || user.email || 'Admin' } : null;
+  adminProfileUnsub?.();
+  ownSanctionUnsub?.();
+  adminProfileUnsub = null;
+  ownSanctionUnsub = null;
+  isAdminUser = false;
+  gameAdminPanel.setAdmin(false);
+  if (adminMenuButton) adminMenuButton.hidden = true;
+  sanctionScreen.set(null);
+  if (!user) return;
+  ownSanctionUnsub = listenOwnSanction(user.uid, (sanction) => sanctionScreen.set(sanction));
+  adminProfileUnsub = onSnapshot(doc(db, 'users', user.uid), (snap) => {
+    isAdminUser = String(snap.data()?.admin).toLowerCase() === 'true';
+    if (adminMenuButton) adminMenuButton.hidden = !isAdminUser || !networkStarted;
+    gameAdminPanel.setAdmin(isAdminUser, window.__miniWarzoneAdminUser);
+  }, () => { isAdminUser = false; if (adminMenuButton) adminMenuButton.hidden = true; gameAdminPanel.setAdmin(false); });
+});
+
+
+resumeButton?.addEventListener('click', () => {
+  audio.unlock();
+  controls.lock();
+});
+adminMenuButton?.addEventListener('click', () => {
+  if (!isAdminUser) return;
+  gameAdminPanel.open();
+});
 
 playButton.addEventListener('click', () => {
   audio.unlock();
@@ -393,6 +449,8 @@ controls.addEventListener('unlock', () => {
   // on ne veut PAS afficher le menu "Cliquer pour jouer" par-dessus — voir
   // la section "Boutique" plus bas.
   if (isShopOpen() || minimap.isOpen()) return;
+  if (resumeButton) resumeButton.hidden = !networkStarted;
+  if (adminMenuButton) adminMenuButton.hidden = !isAdminUser || !networkStarted;
   menuEl.style.display = 'flex';
 });
 
@@ -1261,6 +1319,7 @@ const listenerDir = new THREE.Vector3();
 const JUMP_SPEED = 6.5;
 let verticalVelocity = 0;
 let isGrounded = true;
+let adminNoclipEnabled = false;
 
 const downRaycaster = new THREE.Raycaster();
 // On part du DERNIER sol connu (pas de la position actuelle de la caméra),
@@ -1282,17 +1341,31 @@ function getGroundY(x, z) {
 // Collision horizontale simple (cercle contre boîte, résolu axe par axe pour
 // pouvoir glisser le long d'un mur au lieu de se bloquer net dessus).
 const PLAYER_RADIUS = 0.4;
+const FLAT_PLATE_MAX_THICKNESS = 0.2; // en dessous : décor plat, ignoré par les collisions
+const STEP_HEIGHT = 0.35; // hauteur max franchie sans collision (les plaques de spawn font 0,3 m)
 
 function collidesAt(x, z) {
   if (collisionBoxes.length === 0) return false;
 
+  // Le corps va des PIEDS au sommet de la tête. Les pieds se déduisent de la
+  // hauteur d'yeux ACTUELLE (1,7 m debout, 1,0 accroupi, 0,8 en glissade) : avec
+  // une valeur fixe de 1,7 m, un joueur accroupi avait ses "pieds" calculés
+  // 0,7 m sous terre, donc dans la boîte de collision du sol (qui couvre toute
+  // la map) : il était bloqué de tous côtés, comme enfoncé dans le sol.
   const eyeY = camera.position.y;
-  const playerMinY = eyeY - 1.7;
+  const playerMinY = eyeY - currentEyeHeight;
   const playerMaxY = eyeY - 0.15;
 
   for (const box of collisionBoxes) {
-    // Ignore walls that are entirely above or below the player's body.
-    if (box.max.y < playerMinY || box.min.y > playerMaxY) continue;
+    // On ignore ce qui est entièrement au-dessus de la tête, ou qui ne dépasse
+    // pas la hauteur d'une marche au-dessus des pieds : sol, plaques de spawn
+    // (0,3 m), petits rebords. Ils ne sont pas des murs : le sol visible suit
+    // ces reliefs (voir getGroundY) et le joueur monte dessus.
+    if (box.max.y <= playerMinY + STEP_HEIGHT || box.min.y >= playerMaxY) continue;
+    // Plaque plate (moins de 20 cm d'épaisseur) : un décor posé sur le sol, comme
+    // les motifs des zones de départ (7 cm d'épaisseur, 7 m de côté) — pas un mur.
+    // Sans ça, on apparaissait coincé au milieu de sa zone de départ.
+    if (box.max.y - box.min.y < FLAT_PLATE_MAX_THICKNESS) continue;
 
     // Circle (player) versus axis-aligned box, in the horizontal plane.
     const closestX = THREE.MathUtils.clamp(x, box.min.x, box.max.x);
@@ -1306,6 +1379,7 @@ function collidesAt(x, z) {
 }
 
 function resolveHorizontalCollisions(prevX, prevZ) {
+  if (adminNoclipEnabled) return;
   if (collidesAt(camera.position.x, prevZ)) {
     camera.position.x = prevX;
   }
@@ -1975,6 +2049,10 @@ document.getElementById('map-hint').textContent =
 
 document.addEventListener('keydown', (e) => {
   if (e.repeat || !networkStarted) return;
+  if (e.code === 'Escape' && gameAdminPanel.isOpen()) {
+    gameAdminPanel.close();
+    return;
+  }
   // Pointeur déjà libéré : Échap n'est pas intercepté par le navigateur, on ferme
   // la carte nous-mêmes et on réaffiche le menu pour pouvoir reprendre la partie.
   if (e.code === 'Escape' && minimap.isOpen()) {
@@ -1982,7 +2060,7 @@ document.addEventListener('keydown', (e) => {
     menuEl.style.display = 'flex';
     return;
   }
-  if (e.code !== keybinds.map || isDead || isShopOpen()) return;
+  if (!matchesAction(e, 'map', keybinds) || isDead || isShopOpen()) return;
   if (minimap.isOpen()) {
     minimap.close();
     controls.lock(); // touche pressée = geste utilisateur direct, le verrouillage est autorisé
@@ -2382,7 +2460,6 @@ function tryShoot(now) {
   if (equipped.ammo <= 0) setTimeout(startReload, 220);
 }
 
-let networkStarted = false;
 let localTeam = null;
 const teamLabelEl = document.getElementById('team-label');
 
@@ -2399,7 +2476,7 @@ function handleTeamAssigned({ team, spawn }) {
   }
 }
 
-function startNetwork() {
+async function startNetwork() {
   if (networkStarted) return;
   networkStarted = true;
   keybinds = getKeybinds(); // au cas où elles ont été changées depuis le lobby avant de rejouer
@@ -2412,6 +2489,15 @@ function startNetwork() {
 
   const pseudo = auth.currentUser?.displayName || 'Joueur';
   const groupId = getActiveGroupId();
+  let idToken = null;
+  try { idToken = await auth.currentUser?.getIdToken(); }
+  catch (error) { console.error('[auth] Token Firebase indisponible :', error); }
+  if (!idToken) {
+    networkStarted = false;
+    loadingEl.style.display = 'block';
+    loadingEl.textContent = 'Connexion Firebase impossible. Reconnecte-toi.';
+    return;
+  }
 
   connectToServer(pseudo, getAppearance(), groupId, getActiveMode(), getActiveTeam(), {
     onTeamAssigned: handleTeamAssigned,
@@ -2478,7 +2564,10 @@ function startNetwork() {
     onGrenadeExploded: handleGrenadeExploded,
     onPingPlaced: handlePingPlaced,
     onPingRemoved: ({ senderId }) => minimap.removePing(senderId),
-  });
+    onAdminPlayerList: (players) => gameAdminPanel.setPlayers(players),
+    onAdminActionResult: (result) => gameAdminPanel.showResult(result),
+    onAdminNoclip: (enabled) => { adminNoclipEnabled = enabled; gameAdminPanel.showResult({ ok: true, message: `Traversée des murs ${enabled ? 'activée' : 'désactivée'}.` }); },
+  }, idToken);
 }
 
 // ---------------------------------------------------------------------------
@@ -2712,5 +2801,7 @@ if (import.meta.env.DEV) {
     fx, hudFx, ambiance, camera, scene, renderer, THREE,
     otherPlayers, collisionMeshes, groundVestMeshes, groundWeaponPickups,
     showMuzzleFlash, ejectShellFor, traceShot, drawTracer, addGroundVest, addGroundWeaponPickup,
+    collidesAt, minimap, setEyeHeight: (v) => { currentEyeHeight = v; },
+    setNetworkStarted: (v) => { networkStarted = v; },
   };
 }

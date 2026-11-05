@@ -77,6 +77,17 @@ gameplay.
 **Viseur** : un point + 4 traits fins. À la hanche l'écart suit la dispersion
 réelle de l'arme ; en visant, les traits se resserrent en petit plus.
 
+**Touches et claviers** : le jeu lit la position physique des touches (ZQSD sur
+AZERTY = WASD sur QWERTY, c'est voulu). Exception : la carte (M) se reconnaît à
+sa **lettre** tant qu'elle n'est pas réassignée, car sur un clavier AZERTY la
+touche marquée M n'est pas à la même position que sur un QWERTY. Une touche
+réassignée dans Paramètres redevient une position physique, comme les autres.
+
+**Collisions** : le joueur est bloqué par les murs et obstacles, mais pas par le
+sol, les marches de moins de 35 cm ni les décors plats (motifs de zones de
+départ, moins de 20 cm d'épaisseur). Le bas du corps se calcule d'après la hauteur
+d'yeux réelle (debout, accroupi, glissade) — voir `collidesAt` dans `main.js`.
+
 **Carte et pings** : M ouvre la carte (le jeu continue derrière). Clic gauche
 pose un ping à cet endroit, dans la couleur de ton skin, visible par tes
 alliés sur la carte *et* dans le monde 3D (losange + distance, même à travers

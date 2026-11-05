@@ -42,6 +42,7 @@ import { saveMyAppearance, listenUserAppearance } from './profiles.js';
 import { initKeybindsPicker, getKeybinds, keyLabel, describeMovementKeys } from './keybinds.js';
 import { setActiveGroupId } from './game-session.js';
 import { initSettingsPicker } from './settings.js';
+import { initAdminPanel, listenIsAdmin } from './admin.js';
 import { audio } from './audio.js';
 import {
   initMessaging,
@@ -92,6 +93,8 @@ menuEl.style.display = 'none';
 
 // --- État --------------------------------------------------------------------
 let currentUser = null;
+const accountAdminPanel = initAdminPanel();
+let adminStatusUnsub = null;
 let currentFriends = [];
 let currentGroups = [];
 let openMemberMenuKey = null;
@@ -768,7 +771,12 @@ function renderGroups(groups) {
 // --- État d'authentification -------------------------------------------------
 onAuthChange((user) => {
   clearSubscriptions();
+  adminStatusUnsub?.();
+  adminStatusUnsub = null;
   currentUser = user;
+  accountAdminPanel.setUser(user ? { uid: user.uid, pseudo: user.displayName || user.email || 'Joueur' } : null);
+  if (user) adminStatusUnsub = listenIsAdmin(user.uid, (value) => accountAdminPanel.setAdmin(value));
+  else accountAdminPanel.setAdmin(false);
 
   if (!user) {
     showAuthScreen();
