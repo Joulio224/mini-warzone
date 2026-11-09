@@ -25,6 +25,7 @@ import {
   getMyId,
   sendAdminAction,
   requestAdminPlayers,
+  requestAdminJournal,
   disconnectFromServer,
 } from './network.js';
 import { initShop, openShop, closeShop, isShopOpen, renderShop, rarityColor } from './shop.js';
@@ -385,6 +386,8 @@ const adminMenuButton = document.getElementById('admin-menu-button');
 const gameAdminPanel = initGameAdminPanel({
   sendAction: sendAdminAction,
   refreshPlayers: requestAdminPlayers,
+  requestJournal: requestAdminJournal,
+  getMyId,
 });
 const sanctionScreen = initSanctionScreen({
   onBlock: () => {
@@ -1057,6 +1060,7 @@ updateMoneyUI(localMoney);
 
 function weaponLabel(weaponId) {
   if (weaponId === 'frag') return GRENADE_DEFS.frag.name;
+  if (weaponId === 'admin') return 'Administrateur';
   const weapon = WEAPONS.find((w) => w.id === weaponId);
   return weapon ? weapon.name : 'Vide';
 }
@@ -1192,6 +1196,54 @@ function handleDamageTaken({ x, z, amount }) {
   hudFx.addDamageSource(x, z, amount);
 }
 
+// --- Effets des commandes d'administration reçues ---------------------------------
+const adminStatusEl = document.createElement('div');
+adminStatusEl.id = 'admin-status';
+adminStatusEl.hidden = true;
+document.body.appendChild(adminStatusEl);
+const ADMIN_MODE_LABELS = {
+  godmode: 'Invincible',
+  noclip: 'Murs traversés',
+  fly: 'Vol',
+  invisible: 'Invisible',
+  infiniteAmmo: 'Munitions illimitées',
+  oneShot: 'Un tir = un mort',
+  frozen: 'Immobilisé',
+};
+
+function applyAdminState(state = {}) {
+  Object.keys(adminState).forEach((key) => {
+    if (key in state) adminState[key] = state[key];
+  });
+  adminState.speed = Number(adminState.speed) || 1;
+  // Petit bandeau rappelant les modes actifs sur soi (pour ne pas les oublier)
+  const active = Object.entries(ADMIN_MODE_LABELS)
+    .filter(([key]) => adminState[key])
+    .map(([, label]) => label);
+  if (adminState.speed !== 1) active.push(`Vitesse ×${adminState.speed}`);
+  adminStatusEl.hidden = active.length === 0;
+  adminStatusEl.textContent = active.join(' · ');
+  if (!adminState.fly) verticalVelocity = 0; // plus de vol : on retombe proprement
+}
+
+// Un admin nous déplace (« amener », « aller vers », point de départ, coordonnées)
+function handleAdminTeleport({ position }) {
+  if (!position) return;
+  endSlide();
+  camera.position.set(position.x, position.y, position.z);
+  velocity.set(0, 0, 0);
+  verticalVelocity = 0;
+  lastGroundY = position.y - STAND_EYE_HEIGHT;
+}
+
+// Expulsé de la partie par un admin : on coupe et on retourne au lobby
+function handleAdminKicked({ reason } = {}) {
+  disconnectFromServer();
+  networkStarted = false;
+  window.alert(`Tu as été expulsé de la partie par un administrateur.${reason ? `\nMotif : ${reason}` : ''}`);
+  window.location.reload();
+}
+
 let respawnInterval = null;
 function handleYouDied() {
   hudFx.clear();
@@ -1319,7 +1371,22 @@ const listenerDir = new THREE.Vector3();
 const JUMP_SPEED = 6.5;
 let verticalVelocity = 0;
 let isGrounded = true;
-let adminNoclipEnabled = false;
+// Modes administrateur appliqués à CE joueur par un admin (le serveur est la
+// source de vérité et renvoie l'état complet à chaque changement : 'admin-state').
+// godmode / invisible / infiniteAmmo / oneShot sont gérés par le serveur ; le
+// client n'a besoin de connaître que ce qui change son propre mouvement ou son
+// affichage (noclip, vol, vitesse, immobilisation).
+const adminState = {
+  godmode: false,
+  noclip: false,
+  fly: false,
+  invisible: false,
+  infiniteAmmo: false,
+  oneShot: false,
+  frozen: false,
+  speed: 1,
+};
+let jumpHeld = false;
 
 const downRaycaster = new THREE.Raycaster();
 // On part du DERNIER sol connu (pas de la position actuelle de la caméra),
@@ -1379,7 +1446,7 @@ function collidesAt(x, z) {
 }
 
 function resolveHorizontalCollisions(prevX, prevZ) {
-  if (adminNoclipEnabled) return;
+  if (adminState.noclip) return;
   if (collidesAt(camera.position.x, prevZ)) {
     camera.position.x = prevX;
   }
@@ -1403,7 +1470,8 @@ function onKeyChange(e, isDown) {
       move.right = isDown;
       break;
     case keybinds.jump:
-      if (isDown && isGrounded && !isDead) {
+      jumpHeld = isDown;
+      if (isDown && isGrounded && !isDead && !adminState.frozen) {
         if (slideTimer > 0) {
           // Saut depuis une glissade : on garde l'élan vers l'avant
           endSlide();
@@ -1701,7 +1769,7 @@ function updateSprintState(delta) {
 }
 
 function canStartSlide() {
-  return isSprinting && isGrounded && slideCooldown <= 0 && slideTimer <= 0 && !isDead && !isOverlayOpen();
+  return isSprinting && isGrounded && slideCooldown <= 0 && slideTimer <= 0 && !isDead && !isOverlayOpen() && !adminState.frozen;
 }
 
 function startSlide() {
@@ -2419,7 +2487,7 @@ function tryShoot(now) {
   }
 
   lastShotAt = now;
-  equipped.ammo = (equipped.ammo ?? def.magSize) - 1;
+  if (!adminState.infiniteAmmo) equipped.ammo = (equipped.ammo ?? def.magSize) - 1; // mode admin : le chargeur ne baisse pas
   lastLocalShotAt = performance.now();
 
   const origin = camera.position.clone();
@@ -2564,10 +2632,16 @@ async function startNetwork() {
     onGrenadeExploded: handleGrenadeExploded,
     onPingPlaced: handlePingPlaced,
     onPingRemoved: ({ senderId }) => minimap.removePing(senderId),
-    onAdminPlayerList: (players) => gameAdminPanel.setPlayers(players),
+    onAdminPlayerList: (data) => gameAdminPanel.setPlayers(data),
     onAdminActionResult: (result) => gameAdminPanel.showResult(result),
-    onAdminNoclip: (enabled) => { adminNoclipEnabled = enabled; gameAdminPanel.showResult({ ok: true, message: `Traversée des murs ${enabled ? 'activée' : 'désactivée'}.` }); },
-  }, idToken);
+    onAdminJournal: (entries) => gameAdminPanel.setJournal(entries),
+    onAdminState: applyAdminState,
+    onAdminTeleport: handleAdminTeleport,
+    onAdminKicked: handleAdminKicked,
+    onAdminAnnounce: ({ text, from, private: isPrivate }) => hudFx.showAnnouncement(text, from, isPrivate),
+    onAdminTime: ({ phase }) => ambiance.setPhaseOverride(phase), // null = retour à l'horloge normale
+    onPlayerHidden: ({ id, hidden }) => setOtherPlayerVisible(id, !hidden),
+  }, () => auth.currentUser?.getIdToken() ?? idToken); // jeton frais à chaque reconnexion (il expire au bout d'une heure)
 }
 
 // ---------------------------------------------------------------------------
@@ -2589,7 +2663,7 @@ function animate() {
 
   // Vitesse effective : ralentie en visée, encore plus accroupi, accélérée en courant
   const speedMultiplier = isCrouching ? 0.5 : isAiming ? 0.65 : isSprinting ? SPRINT_MULT : 1;
-  const speed = BASE_SPEED * speedMultiplier;
+  const speed = BASE_SPEED * speedMultiplier * adminState.speed;
 
   // Friction
   velocity.x -= velocity.x * 10 * delta;
@@ -2600,11 +2674,16 @@ function animate() {
   direction.normalize();
 
   const isSliding = slideTimer > 0;
-  const isMoving = !isDead && !isOverlayOpen() && (move.forward || move.backward || move.left || move.right);
+  const isMoving = !isDead && !isOverlayOpen() && !adminState.frozen && (move.forward || move.backward || move.left || move.right);
   if (!isDead && !isOverlayOpen()) {
     const prevX = camera.position.x;
     const prevZ = camera.position.z;
-    if (isSliding) {
+    if (adminState.frozen) {
+      // Immobilisé par un admin : on peut regarder et tirer, pas bouger
+      velocity.x = 0;
+      velocity.z = 0;
+      if (isSliding) endSlide();
+    } else if (isSliding) {
       // Glissade : élan dans une direction figée, qui ralentit jusqu'à la fin
       const t = 1 - slideTimer / SLIDE_DURATION;
       const slideSpeed = THREE.MathUtils.lerp(SLIDE_SPEED_START, SLIDE_SPEED_END, t);
@@ -2637,10 +2716,19 @@ function animate() {
     const groundY = getGroundY(camera.position.x, camera.position.z);
     const standingY = groundY + currentEyeHeight;
 
-    verticalVelocity -= GRAVITY * delta;
-    camera.position.y += verticalVelocity * delta;
+    if (adminState.fly) {
+      // Mode vol : pas de gravité, saut = monter, accroupi = descendre
+      const climb = (jumpHeld ? 1 : 0) - (isCrouching ? 1 : 0);
+      verticalVelocity = 0;
+      camera.position.y = Math.max(standingY, camera.position.y + climb * 9 * adminState.speed * delta);
+    } else {
+      verticalVelocity -= GRAVITY * delta;
+      camera.position.y += verticalVelocity * delta;
+    }
 
-    if (camera.position.y <= standingY) {
+    if (adminState.fly && camera.position.y > standingY + 0.05) {
+      isGrounded = false;
+    } else if (camera.position.y <= standingY) {
       const fallSpeed = -verticalVelocity; // vitesse d'impact, avant remise à zéro
       camera.position.y = standingY;
       verticalVelocity = 0;
@@ -2803,5 +2891,6 @@ if (import.meta.env.DEV) {
     showMuzzleFlash, ejectShellFor, traceShot, drawTracer, addGroundVest, addGroundWeaponPickup,
     collidesAt, minimap, setEyeHeight: (v) => { currentEyeHeight = v; },
     setNetworkStarted: (v) => { networkStarted = v; },
+    applyAdminState, handleAdminTeleport, adminState, gameAdminPanel,
   };
 }

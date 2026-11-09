@@ -142,5 +142,28 @@ export function createHudFx({ camera, numbersLayerEl, indicatorLayerEl, vignette
     recentByTarget.clear();
   }
 
-  return { showDamageNumber, addDamageSource, update, clear };
+  // --- Annonces des administrateurs ----------------------------------------------
+  // Bandeau en haut de l'écran ; plusieurs annonces s'empilent et disparaissent seules.
+  let announceLayer = null;
+  function showAnnouncement(text, from = null, isPrivate = false) {
+    if (!text) return;
+    if (!announceLayer) {
+      announceLayer = document.createElement('div');
+      announceLayer.id = 'announce-layer';
+      document.body.appendChild(announceLayer);
+    }
+    const banner = document.createElement('div');
+    banner.className = `announce-banner${isPrivate ? ' private' : ''}`;
+    const label = document.createElement('span');
+    label.className = 'announce-from';
+    label.textContent = isPrivate ? 'Message de l\'administrateur' : from ? `Annonce · ${from}` : 'Annonce';
+    const body = document.createElement('div');
+    body.textContent = text; // textContent : jamais de HTML venu du réseau
+    banner.append(label, body);
+    announceLayer.appendChild(banner);
+    setTimeout(() => banner.classList.add('hide'), 8000);
+    setTimeout(() => banner.remove(), 8600);
+  }
+
+  return { showDamageNumber, addDamageSource, showAnnouncement, update, clear };
 }

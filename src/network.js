@@ -33,8 +33,22 @@ let socket = null;
 // mode/team : 'team' + une couleur si le créateur du groupe a activé le mode
 // Équipes et assigné ce joueur — dans ce cas les coéquipiers ne peuvent pas
 // se tirer dessus (voir server.js). 'solo'/null sinon (comportement inchangé).
+// `idToken` : jeton Firebase du joueur (chaîne), ou fonction qui en renvoie un
+// frais (de préférence : un jeton ne vit qu'une heure, et Socket.io rappelle la
+// fonction à chaque reconnexion automatique). Le serveur le vérifie : c'est lui
+// qui sait qui est le joueur, et s'il est administrateur ou sanctionné.
 export function connectToServer(pseudo, appearance, groupId, mode, team, handlers, idToken) {
-  socket = io(SERVER_URL, { auth: { idToken } });
+  const tokenProvider = typeof idToken === 'function' ? idToken : () => idToken;
+  socket = io(SERVER_URL, {
+    auth: async (callback) => {
+      try {
+        callback({ idToken: await tokenProvider() });
+      } catch (error) {
+        console.error('[auth] Token Firebase indisponible :', error);
+        callback({});
+      }
+    },
+  });
 
   socket.on('connect', () => {
     socket.emit('join', { pseudo, appearance, groupId, mode, team });
@@ -176,15 +190,16 @@ export function connectToServer(pseudo, appearance, groupId, mode, team, handler
     handlers.onPingRemoved?.(data);
   });
 
-  socket.on('admin-player-list', (players) => {
-    handlers.onAdminPlayerList?.(players);
-  });
-  socket.on('admin-action-result', (result) => {
-    handlers.onAdminActionResult?.(result);
-  });
-  socket.on('admin-noclip', (data) => {
-    handlers.onAdminNoclip?.(Boolean(data?.enabled));
-  });
+  // --- Administration (voir game-admin.js et admin-tools.js côté serveur) ---
+  socket.on('admin-player-list', (data) => handlers.onAdminPlayerList?.(data));
+  socket.on('admin-action-result', (data) => handlers.onAdminActionResult?.(data));
+  socket.on('admin-journal', (data) => handlers.onAdminJournal?.(data));
+  socket.on('admin-state', (data) => handlers.onAdminState?.(data));
+  socket.on('admin-teleport', (data) => handlers.onAdminTeleport?.(data));
+  socket.on('admin-kicked', (data) => handlers.onAdminKicked?.(data));
+  socket.on('admin-announce', (data) => handlers.onAdminAnnounce?.(data));
+  socket.on('admin-time', (data) => handlers.onAdminTime?.(data));
+  socket.on('player-hidden', (data) => handlers.onPlayerHidden?.(data));
 
   socket.on('connect_error', (error) => {
     console.error('[network] Connexion au serveur temps réel impossible :', error.message);
@@ -270,18 +285,21 @@ export function isConnected() {
   return Boolean(socket?.connected);
 }
 
-export function disconnectFromServer() {
-  socket?.disconnect();
-  socket = null;
-}
-
-// Commandes réservées aux administrateurs : le serveur revérifie le token et les droits.
-export function sendAdminAction(action) {
-  if (!socket?.connected) return;
-  socket.emit('admin-action', action);
+// Commande d'administration : { action, targetId?, ...paramètres }. Le serveur
+// revérifie à chaque fois que le compte est bien administrateur.
+export function sendAdminAction(payload) {
+  socket?.emit('admin-action', payload);
 }
 
 export function requestAdminPlayers() {
-  if (!socket?.connected) return;
-  socket.emit('admin-list-players');
+  socket?.emit('admin-list-players');
+}
+
+export function requestAdminJournal() {
+  socket?.emit('admin-journal');
+}
+
+export function disconnectFromServer() {
+  socket?.disconnect();
+  socket = null;
 }

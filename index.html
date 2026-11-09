@@ -181,6 +181,16 @@
     #crosshair .ch-r { height: var(--thick); width: var(--len); top: calc(var(--thick) / -2); left: calc(var(--gap) + var(--hit-extra)); }
     #crosshair.hit { --ch-color: #ffb400; } /* touche confirmée : les traits passent à l orange, sans bouger */
 
+    /* --- Administration : annonces et rappel des modes actifs --------------------- */
+    #announce-layer { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 9; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; max-width: min(640px, 92vw); }
+    .announce-banner { background: rgba(20, 21, 26, 0.92); border: 1px solid rgba(230, 57, 70, 0.7); border-left-width: 4px; color: #fff; padding: 9px 16px; border-radius: 8px; font: 600 0.95rem system-ui, sans-serif; text-align: center; transition: opacity 0.5s ease; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); }
+    .announce-banner.private { border-color: rgba(255, 210, 63, 0.8); }
+    .announce-banner.hide { opacity: 0; }
+    .announce-from { display: block; font-size: 0.68rem; letter-spacing: 1px; text-transform: uppercase; color: #ff8a93; margin-bottom: 2px; }
+    .announce-banner.private .announce-from { color: #ffd23f; }
+    #admin-status { position: fixed; top: 10px; left: 10px; z-index: 6; background: rgba(230, 57, 70, 0.85); color: #fff; font: 700 0.72rem system-ui, sans-serif; letter-spacing: 0.5px; padding: 4px 10px; border-radius: 999px; pointer-events: none; }
+    #admin-status[hidden] { display: none; }
+
     /* --- Effets de combat : chiffres de dégâts, direction des coups, vie basse --- */
     #damage-numbers, #damage-indicators { position: fixed; inset: 0; pointer-events: none; z-index: 8; overflow: hidden; }
     .dmg-number {
